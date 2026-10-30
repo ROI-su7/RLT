@@ -6,6 +6,10 @@
 #    so the Piper/Cobot Magic environments stay as pinned.
 set -euo pipefail
 RLT_ROOT="${RLT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 cd "$RLT_ROOT/so101"
 uv venv -q --python 3.11 .venv
 uv pip install -q --python .venv/bin/python -r requirements.txt
@@ -17,5 +21,6 @@ for venv in "$RLT_ROOT/openpi/.venv" "$RLT_ROOT/openpi/RLinf/.venv-rlt"; do
     echo "[RLT] $venv missing; run steps 03/04 first, then this step again"
   fi
 done
-id -nG | grep -qw dialout || echo "[RLT] add yourself to dialout: sudo usermod -aG dialout \$USER (then re-login)"
+id -nG | grep -qw dialout || echo "[RLT] serial access: sudo usermod -aG dialout \$USER (then re-login)"
+id -nG | grep -qw input || echo "[RLT] evdev keyboard for RLT keys: sudo usermod -aG input \$USER, or use RLINF_SO101_KEYBOARD=file"
 echo "[RLT] so101 env ok"
