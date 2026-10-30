@@ -14,12 +14,18 @@ case "$TAKEOVER_BACKEND" in
     PIPER_LAUNCH="start_inference_takeover.launch master_left_can:=can_l_leader master_right_can:=can_r_leader puppet_left_can:=can_l_follower puppet_right_can:=can_r_follower publish_hz:=200"
     COMMAND_TOPICS=(/teleop/command/joint_left /teleop/command/joint_right)
     ;;
+  followers)
+    # Followers only (leader CANs unused, T disabled); pair with
+    # RLINF_STAGE2_CONFIG_NAME=realworld_piper_rlt_stage2_followers.
+    PIPER_LAUNCH="start_inference_followers.launch puppet_left_can:=can_l_follower puppet_right_can:=can_r_follower publish_hz:=200 rlt_stage2:=true"
+    COMMAND_TOPICS=(/teleop/command/joint_left /teleop/command/joint_right)
+    ;;
   legacy)
     PIPER_LAUNCH="start_ms_piper.launch mode:=1 auto_enable:=true"
     COMMAND_TOPICS=(/master/joint_left /master/joint_right)
     ;;
   *)
-    echo "RLINF_PIPER_TAKEOVER_BACKEND must be four_can or legacy" >&2
+    echo "RLINF_PIPER_TAKEOVER_BACKEND must be four_can, followers or legacy" >&2
     exit 1
     ;;
 esac

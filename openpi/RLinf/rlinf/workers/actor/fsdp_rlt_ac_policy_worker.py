@@ -35,6 +35,7 @@ from rlinf.data.embodied_io_struct import Trajectory
 from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.models.embodiment.mlp_policy.rlt_action_space import RLTDeltaActionSpace
 from rlinf.scheduler import Worker
+from rlinf.utils.arm_layout import gripper_slice, is_arm_joint
 from rlinf.utils.distributed import all_reduce_dict
 from rlinf.utils.metric_utils import (
     append_to_dict,
@@ -145,8 +146,8 @@ class RLTACLossMixin:
             dtype=next_actions.dtype,
         )
         clip = torch.full_like(std, float(smoothing_cfg.get("arm_clip", 0.0)))
-        std[6::7] = float(smoothing_cfg.get("gripper_std", 0.0))
-        clip[6::7] = float(smoothing_cfg.get("gripper_clip", 0.0))
+        std[gripper_slice(std.shape[-1])] = float(smoothing_cfg.get("gripper_std", 0.0))
+        clip[gripper_slice(clip.shape[-1])] = float(smoothing_cfg.get("gripper_clip", 0.0))
         if bool((std < 0).any()) or bool((clip < 0).any()):
             raise ValueError("target_policy_smoothing std/clip must be non-negative.")
         chunk = next_actions.reshape(next_actions.shape[0], -1, action_dim)
@@ -258,7 +259,7 @@ class RLTACLossMixin:
             return {}
         chunk_len, action_dim = self._chunk_shape()
         std = torch.full((action_dim,), arm_std, device=raw_pi.device)
-        std[6::7] = float(exploration_cfg.get("gripper_std", 0.0))
+        std[gripper_slice(std.shape[-1])] = float(exploration_cfg.get("gripper_std", 0.0))
         noise = smooth_exploration_noise(
             raw_pi.shape[0],
             chunk_len,
@@ -314,7 +315,7 @@ class RLTACLossMixin:
         if not bool(teach.any()):
             return {}
         (grad,) = torch.autograd.grad(qf_pi.sum(), pi, retain_graph=True)
-        arm = [index for index in range(action_dim) if index % 7 != 6]
+        arm = [index for index in range(action_dim) if is_arm_joint(index, action_dim)]
         g = grad.detach().reshape(-1, chunk_len, action_dim)[:, :, arm].mean(1)[teach]
         h = correction[:, :, arm].mean(1)[teach]
         cosine = (g * h).sum(-1) / (g.norm(dim=-1) * h.norm(dim=-1) + 1e-12)
@@ -447,7 +448,7 @@ class RLTACLossMixin:
             if valid is None
             else valid.to(device=raw_pi.device, dtype=torch.bool).reshape_as(human)
         )
-        indices = [i for i in range(action_dim) if i % 7 != 6]
+        indices = [i for i in range(action_dim) if is_arm_joint(i, action_dim)]
         increments = predicted[:, 1:, indices] - predicted[:, :-1, indices]
         target_increments = target[:, 1:, indices] - target[:, :-1, indices]
         error = (increments - target_increments).square().mean(dim=-1)

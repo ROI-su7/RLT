@@ -23,6 +23,7 @@ from rlinf.models.embodiment.modules.rlt_projected_heads import (
     RLTProjectedActor,
     RLTProjectedTwinQ,
 )
+from rlinf.utils.arm_layout import gripper_slice
 
 ACTOR_ARCHITECTURES = ("mlp", "projected")
 ACTOR_OUTPUTS = ("full", "residual")
@@ -219,7 +220,7 @@ class RLTMLPPolicy(MLPPolicy):
         else:
             # Backward-compatible physical-unit sigma for other RLT configs.
             per_step_std = torch.full((self.step_action_dim,), self.fixed_std)
-            per_step_std[6::7] = self.fixed_gripper_std
+            per_step_std[gripper_slice(per_step_std.shape[-1])] = self.fixed_gripper_std
             action_std = self.action_space.scale_sigma(per_step_std).repeat(
                 self.chunk_len
             )

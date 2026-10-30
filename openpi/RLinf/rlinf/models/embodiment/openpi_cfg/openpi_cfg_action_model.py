@@ -392,7 +392,7 @@ class OpenPi0ForCFGActionPrediction(BasePolicy, PI0Pytorch):
         )
 
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
-            self.embed_suffix(state, x_t, time)
+            self._embed_suffix_mixed_precision(state, x_t, time)
         )
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[
@@ -437,7 +437,12 @@ class OpenPi0ForCFGActionPrediction(BasePolicy, PI0Pytorch):
         def action_out_proj_func(suffix_out):
             return self.action_out_proj(suffix_out)
 
-        v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
+        with torch.autocast(
+            device_type=suffix_out.device.type,
+            dtype=torch.bfloat16,
+            enabled=self._bf16_projection_autocast(suffix_out),
+        ):
+            v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
         per_element_loss = F.mse_loss(u_t, v_t, reduction="none")
         flow_loss = per_element_loss.mean()
         per_sample_loss = per_element_loss.detach().mean(dim=(-1, -2))
@@ -815,6 +820,24 @@ class OpenPi0ForCFGActionPrediction(BasePolicy, PI0Pytorch):
 
         return {"actions": x_t}
 
+    def _bf16_projection_autocast(self, reference: torch.Tensor) -> bool:
+        """Whether FP32 flow inputs meet BF16 projection weights.
+
+        Decided from the model config: under FSDP mixed precision the weights
+        are FP32 outside the wrapper and only BF16 inside its forward, so their
+        visible dtype cannot be used.
+        """
+        return reference.is_cuda and getattr(self.config, "dtype", None) == "bfloat16"
+
+    def _embed_suffix_mixed_precision(self, state, actions, timestep):
+        """Match FP32 flow inputs to BF16 projection weights under FSDP."""
+        with torch.autocast(
+            device_type=actions.device.type,
+            dtype=torch.bfloat16,
+            enabled=self._bf16_projection_autocast(actions),
+        ):
+            return self.embed_suffix(state, actions, timestep)
+
     def get_suffix_out(
         self,
         state,
@@ -825,7 +848,7 @@ class OpenPi0ForCFGActionPrediction(BasePolicy, PI0Pytorch):
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
-            self.embed_suffix(state, x_t, timestep)
+            self._embed_suffix_mixed_precision(state, x_t, timestep)
         )
 
         suffix_len = suffix_pad_masks.shape[1]
@@ -873,6 +896,12 @@ class OpenPi0ForCFGActionPrediction(BasePolicy, PI0Pytorch):
 
     def _preprocess_observation(self, observation, *, train=True):
         """Helper method to preprocess observation."""
+        # FSDP mixed precision may cast input images to bf16, whereas OpenPI's
+        # augmentation builds its rotation grid in float32. grid_sample requires
+        # matching dtypes; image preprocessing is defined in float32.
+        observation = observation.replace(
+            images={key: image.float() for key, image in observation.images.items()}
+        )
         part_observation = _preprocessing.preprocess_observation_pytorch(
             observation, train=train
         )

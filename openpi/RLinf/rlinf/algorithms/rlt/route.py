@@ -22,6 +22,7 @@ import torch
 
 from rlinf.algorithms.rlt.expert import predict_expert_actions
 from rlinf.algorithms.rlt.transition import use_simulator_transition_replay
+from rlinf.utils.arm_layout import arm_width, gripper_slice, is_arm_joint
 from rlinf.utils.logging import get_logger
 
 
@@ -98,9 +99,9 @@ def _normalize_rlt_switch_flags(
 
 
 def arm_indices(action_dim: int, device: torch.device) -> torch.Tensor:
-    """Return arm joints while excluding each 7-D arm's gripper."""
+    """Return arm joints while excluding each arm's gripper."""
     return torch.tensor(
-        [idx for idx in range(action_dim) if idx % 7 != 6],
+        [idx for idx in range(action_dim) if is_arm_joint(idx, action_dim)],
         dtype=torch.long,
         device=device,
     )
@@ -286,9 +287,9 @@ def arm_limit_vector(
     """Per-dimension correction bound for one action step.
 
     ``arm_limit`` is one bound for every arm joint, or one bound per joint of
-    an arm (6 values, applied to each arm of a 7-D-per-arm action) or per
-    action dimension. Gripper slots get ``inf`` here; the gripper bound is
-    applied separately.
+    an arm (6 values for 7-D Piper arms, 5 for 6-D SO101 arms; applied to each
+    arm) or per action dimension. Gripper slots get ``inf`` here; the gripper
+    bound is applied separately.
     """
     if arm_limit is None:
         return None
@@ -297,9 +298,12 @@ def arm_limit_vector(
     values = [float(v) for v in arm_limit]
     if len(values) == action_dim:
         return values
-    if len(values) == 6 and action_dim % 7 == 0:
-        return (values + [float("inf")]) * (action_dim // 7)
-    raise ValueError(f"arm_limit needs 1, 6 or {action_dim} values, got {len(values)}.")
+    width = arm_width(action_dim)
+    if len(values) == width - 1 and action_dim % width == 0:
+        return (values + [float("inf")]) * (action_dim // width)
+    raise ValueError(
+        f"arm_limit needs 1, {width - 1} or {action_dim} values, got {len(values)}."
+    )
 
 
 def actor_refinement_stages(
@@ -333,7 +337,7 @@ def actor_refinement_stages(
             device=delta.device,
         )
         if gripper_limit is not None:
-            limits[6::7] = float(gripper_limit)
+            limits[gripper_slice(limits.shape[-1])] = float(gripper_limit)
         bounded = torch.clamp(delta, min=-limits, max=limits)
         clipped = (bounded != delta).reshape(delta.shape[0], -1).any(dim=-1)
         delta = bounded
@@ -646,7 +650,7 @@ class RealworldRLTRoute(RLTRoute):
                 dtype=delta.dtype,
             )
             if self.actor_correction_slew_gripper is not None:
-                rate[6::7] = self.actor_correction_slew_gripper
+                rate[gripper_slice(rate.shape[-1])] = self.actor_correction_slew_gripper
             steps = torch.arange(
                 1, chunk_len + 1, device=delta.device, dtype=delta.dtype
             )[:, None]
@@ -718,7 +722,7 @@ class RealworldRLTRoute(RLTRoute):
                     .all(dim=-1)
                 )
             if self.max_actor_takeover_gripper_deviation is not None:
-                gripper_delta = delta[..., 6::7]
+                gripper_delta = delta[..., gripper_slice(delta.shape[-1])]
                 safe &= (
                     (
                         gripper_delta.abs()
@@ -733,7 +737,7 @@ class RealworldRLTRoute(RLTRoute):
             std = torch.full(
                 (action_dim,), self.exploration_arm_std, device=actions.device
             )
-            std[6::7] = self.exploration_gripper_std
+            std[gripper_slice(std.shape[-1])] = self.exploration_gripper_std
             noise = smooth_exploration_noise(
                 batch_size,
                 chunk_len,

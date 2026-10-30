@@ -18,10 +18,12 @@ from typing import Any
 
 import torch
 
+from rlinf.utils.arm_layout import is_arm_joint
+
 
 def default_joint_mask(action_dim: int) -> list[bool]:
-    """Arm joints are deltas; every 7th dimension is an absolute gripper."""
-    return [index % 7 != 6 for index in range(action_dim)]
+    """Arm joints are deltas; the last entry of every arm block is an absolute gripper."""
+    return [is_arm_joint(index, action_dim) for index in range(action_dim)]
 
 
 class RLTDeltaActionSpace(torch.nn.Module):
