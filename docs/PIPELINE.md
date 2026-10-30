@@ -70,12 +70,16 @@ ln -s ~/rlt_data/lerobot_data openpi/lerobot_data     # 训练配置读取 ./ler
 
 ```bash
 cd openpi
-.venv/bin/python scripts/compute_norm_stats.py --config-name pi05_connect_strings
+# 归一化统计：直接读 parquet，不解码视频（与 compute_norm_stats.py 结果一致，最大差异约 5e-3）
+.venv/bin/python scripts/compute_lerobot_parquet_norm_stats.py --dataset-root lerobot_data/all_wire_data \
+  --output-dir assets/pi05_connect_strings/all_wire_data --action-horizon 50
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 .venv/bin/python scripts/train.py pi05_connect_strings \
   --exp-name=pi05_connect_strings_$(date +%Y%m%d) --no-wandb-enabled --overwrite
 ```
 
-全参微调需要多卡（参考：8×A100 或 8×3090 的 Slurm 脚本 `openpi/slurm/*.sbatch`）。
+- 全参微调需要多卡（参考：8×A100 或 8×3090 的 Slurm 脚本 `openpi/slurm/*.sbatch`）；单张 24 GB 显卡只能跑 LoRA 配置 `pi05_wire`。
+- 已知问题：在本环境中 `scripts/compute_norm_stats.py` 会在“先导入 openpi 配置、再导入 lerobot”时段错误（原机器上同样复现），
+  因此用上面的 parquet 版本。
 产物：`openpi/checkpoints/pi05_connect_strings/<exp>/<step>/`（我们部署的是 step 30000）。
 
 ## 5. 原生 JAX 推理服务（参考动作 + RL Token 前缀）
@@ -100,15 +104,16 @@ RLINF_PI05_JAX_DIR=<π0.5 checkpoint> RLINF_ROBOT_RLT_TOKEN=<rlt_token.pt> \
 在微调数据上训练 RL Token 自编码器（π0.5 冻结，只训练编码器/解码器；JAX 前向 + PyTorch FSDP）。
 
 ```bash
-cd openpi/RLinf
-source .venv-rlt/bin/activate
-export PYTHONPATH="$PWD:$PWD/../src" XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_ALLOCATOR=platform
-torchrun --standalone --nproc-per-node=<GPU 数> toolkits/realworld_check/train_piper_rlt_token_native_jax.py \
+cd openpi                      # 数据配置中的 ./lerobot_data 相对 openpi/ 解析
+source RLinf/.venv-rlt/bin/activate
+export PYTHONPATH="$PWD/RLinf:$PWD/src" XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_ALLOCATOR=platform
+torchrun --standalone --nproc-per-node=<GPU 数> RLinf/toolkits/realworld_check/train_piper_rlt_token_native_jax.py \
   --jax-checkpoint <π0.5 checkpoint> --dataset-dir ~/rlt_data/lerobot_data/all_wire_data \
   --output-dir ~/rlt_checkpoints/rlt_token --config-name pi05_connect_strings --steps 10000 --accumulate 8
 ```
 
-参考：8×A100 训练 10000 步。Slurm 模板：`openpi/RLinf/slurm/train_piper_rlt_token_native_jax_8x*.sbatch`。
+显存：冻结的 π0.5（JAX）与约 7.5 亿参数的 RL Token（fp32 主权重 + AdamW）同卡常驻，**单张 24 GB 显卡放不下**，
+至少需要 2 张 24 GB（FSDP 分片优化器状态）或单卡 ≥ 40 GB。参考：8×A100 训练 10000 步。Slurm 模板：`openpi/RLinf/slurm/train_piper_rlt_token_native_jax_8x*.sbatch`。
 产物 `step_<N>/rlt_token.pt`（format_version 2）。
 
 ## 7. 接头位姿检测器（右腕相机）

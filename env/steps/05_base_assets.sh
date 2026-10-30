@@ -7,7 +7,11 @@ cd "$RLT_ROOT/openpi"
 # pi0.5 base checkpoint (gs://openpi-assets/checkpoints/pi05_base) into ~/.cache/openpi.
 .venv/bin/python - <<'PY'
 from openpi.shared import download
-path = download.maybe_download("gs://openpi-assets/checkpoints/pi05_base")
+url = "gs://openpi-assets/checkpoints/pi05_base"
+path = download.maybe_download(url)
+if not (path / "params").exists():  # an interrupted earlier download leaves an empty dir
+    path = download.maybe_download(url, force_download=True)
+assert (path / "params").exists(), f"pi05_base download incomplete: {path}"
 print("[RLT] pi05_base at", path)
 open(".pi05_base_path", "w").write(str(path))
 PY
