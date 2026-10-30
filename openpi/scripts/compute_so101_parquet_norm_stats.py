@@ -24,7 +24,8 @@ def _action_windows(actions: np.ndarray, horizon: int, batch_size: int):
 
 def main(
     dataset_root: pathlib.Path,
-    output_dir: pathlib.Path = pathlib.Path("assets/pi05_so101_dual/so101_dual"),
+    config_names: tuple[str, ...] = ("pi05_so101_dual", "pi05_so101_dual_lora"),
+    asset_id: str = "so101_dual",
     action_horizon: int = 50,
     batch_size: int = 4096,
 ):
@@ -43,8 +44,11 @@ def main(
             window[..., :5] -= s[:, None, :5]
             window[..., 6:11] -= s[:, None, 6:11]
             stats["actions"].update(window)
-    normalize.save(output_dir, {k: v.get_statistics() for k, v in stats.items()})
-    print("Wrote", output_dir)
+    norm_stats = {k: v.get_statistics() for k, v in stats.items()}
+    for name in config_names:  # each train config looks in assets/<config name>/<asset_id>
+        out = pathlib.Path("assets") / name / asset_id
+        normalize.save(out, norm_stats)
+        print("Wrote", out)
 
 
 if __name__ == "__main__":

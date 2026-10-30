@@ -301,6 +301,7 @@ class LeRobotSo101DataConfig(DataConfigFactory):
                         },
                         "state": "observation.state",
                         "actions": "action",
+                        "prompt": "prompt",  # filled from the recorded task (prompt_from_task)
                     }
                 )
             ]

@@ -2,7 +2,7 @@
 
 真机强化学习微调 VLA 的完整工程：在冻结的 π0.5（openpi，原生 JAX）之上，用 **RL Token（Stage 1）**
 压缩 VLA 表征，再在真机上训练 **chunk 级 Actor-Critic（Stage 2）** 对 π0.5 的动作块做精细修正。
-目标平台是 AgileX **Cobot Magic（双 Piper）**；SO101 机械臂的适配见 [docs/SO101.md](docs/SO101.md)（尚未完成）。
+目标平台是 AgileX **Cobot Magic（双 Piper）**；SO101 双臂的采集、π0.5 训练、推理见 [docs/SO101.md](docs/SO101.md)（RLT 部分尚未完成）。
 
 > 本仓库只包含代码与配置。**数据集、微调权重和 Python 环境都不上传**；环境用 `env/install_all.sh` 一键安装，
 > 公开的基座权重（π0.5 base、PaliGemma tokenizer）由脚本下载，任务数据需要按 [docs/PIPELINE.md](docs/PIPELINE.md) 自行采集。
