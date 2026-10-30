@@ -1,13 +1,9 @@
-# RLT on Cobot Magic and dual SO101: π0.5 + RL Token + chunk actor-critic
+# RLT on Cobot Magic: π0.5 + RL Token + chunk actor-critic
 
 真机强化学习微调 VLA 的完整工程：在冻结的 π0.5（openpi，原生 JAX）之上，用 **RL Token（Stage 1）**
 压缩 VLA 表征，再在真机上训练 **chunk 级 Actor-Critic（Stage 2）** 对 π0.5 的动作块做精细修正。
-支持两个平台，各自从数据采集一直到 RLT：
-
-- AgileX **Cobot Magic（双 Piper，ROS + 四 CAN）**：[docs/PIPELINE.md](docs/PIPELINE.md)
-- **双臂 SO101（LeRobot，无 ROS）**：[docs/SO101.md](docs/SO101.md)，人工接管参考 Evo-RLT 的 leader 臂方案
-
-两者共用 π0.5 / RL Token / Stage 2 学习器，机器人侧代码、配置和启动脚本互不重叠。
+目标平台是 AgileX **Cobot Magic（双 Piper，ROS + 四 CAN）**：数据采集、π0.5 微调、推理、人工接管（主臂接管 / 只用从臂）和 RLT 全流程。
+双臂 SO101（LeRobot，无 ROS）版本是独立仓库 [ROI-su7/RLT-SO101](https://github.com/ROI-su7/RLT-SO101)，两者从同一套代码拆分。
 
 > 本仓库只包含代码与配置。**数据集、微调权重和 Python 环境都不上传**；环境用 `env/install_all.sh` 一键安装，
 > 公开的基座权重（π0.5 base、PaliGemma tokenizer）由脚本下载，任务数据需要按 [docs/PIPELINE.md](docs/PIPELINE.md) 自行采集。
@@ -23,15 +19,10 @@
 | `cobot_magic/Piper_ros_private-ros-noetic/` | 子模块：Piper ROS 驱动（四 CAN 复用器、主从接管），本地改动在 `patches/` |
 | `cobot_magic/collect_data/piper_sdk_demo/` | 子模块：AgileX piper_sdk 示例，本地改动在 `patches/` |
 | `cobot_magic/aloha_des/src/mobile_aloha_sim/` | 子模块：AgileX mobile_aloha_sim 描述文件 |
-| `so101/` | 双臂 SO101：只读探测、双臂配置（按 USB 序列号）、标定/遥操作/录制、纯 π0.5 推理 |
-| `openpi/RLinf/rlinf/envs/realworld/so101/` | SO101 的 RLT 真机环境与 leader 臂人工接管 |
 | `env/` | 一键环境安装（`install_all.sh`）、固定版本依赖（`requirements-rlt.txt`）、自检（`verify.sh`） |
 | `docs/` | 完整流程、原理与问题记录 |
 
 ## 快速开始（Cobot Magic）
-
-SO101 主机：`bash env/install_all.sh --so101 && bash env/verify.sh --so101`，之后按 [docs/SO101.md](docs/SO101.md)。
-
 
 参考环境：Ubuntu 20.04、ROS Noetic、NVIDIA 驱动 ≥ 535（CUDA 12）、单卡 RTX 4090（24 GB）。
 

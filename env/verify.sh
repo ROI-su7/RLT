@@ -3,14 +3,11 @@
 #
 #   bash env/verify.sh            # environments + unit tests
 #   bash env/verify.sh --no-ros   # skip the catkin workspace checks
-#   bash env/verify.sh --so101    # dual-SO101 host: no ROS, check the Feetech bus deps instead
 set -uo pipefail
 RLT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RLINF="$RLT_ROOT/openpi/RLinf"
 CHECK_ROS=1
-CHECK_SO101=0
 [[ "${1:-}" == "--no-ros" ]] && CHECK_ROS=0
-[[ "${1:-}" == "--so101" ]] && CHECK_ROS=0 && CHECK_SO101=1
 FAIL=0
 ok() { echo "  [ok]   $*"; }
 bad() { echo "  [FAIL] $*"; FAIL=1; }
@@ -42,23 +39,7 @@ if [[ $CHECK_ROS == 1 ]]; then
   if /usr/bin/python3 -c "import piper_sdk" 2>/dev/null; then ok "system python piper_sdk"; else bad "system python lacks piper_sdk"; fi
 fi
 
-if [[ $CHECK_SO101 == 1 ]]; then
-  echo "== SO101"
-  for venv in "$RLT_ROOT/openpi/.venv" "$RLINF/.venv-rlt"; do
-    if env -u PYTHONPATH "$venv/bin/python" -c "import scservo_sdk, serial, lerobot" 2>/dev/null; then
-      ok "$venv: Feetech SDK + pyserial + lerobot"
-    else
-      bad "$venv lacks the SO101 bus deps: run env/install_all.sh --only 06"
-    fi
-  done
-  if (cd "$RLT_ROOT/openpi" && env -u PYTHONPATH .venv/bin/python -m pytest -q -p no:cacheprovider src/openpi/policies/so101_policy_test.py >/dev/null 2>&1); then
-    ok "openpi SO101 policy/config tests"
-  else
-    bad "openpi SO101 policy/config tests"
-  fi
-fi
-
-echo "== Unit tests (RLT / Piper / SO101)"
+echo "== Unit tests (RLT / Piper)"
 cd "$RLINF"
 TESTS=$(ls tests/unit_tests/test_*rlt*.py tests/unit_tests/test_*piper*.py tests/unit_tests/test_*replay*.py | sort -u)
 if env -u PYTHONPATH .venv-rlt/bin/python -m pytest -q -p no:cacheprovider $TESTS; then

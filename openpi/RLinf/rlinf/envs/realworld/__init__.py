@@ -30,7 +30,6 @@ from .gim_arm import tasks as gim_arm_tasks
 from .piper import PiperRobotConfig, PiperWireEnv
 from .piper import tasks as piper_tasks
 from .realworld_env import RealWorldEnv
-from .so101 import So101Config, So101DualEnv
 from .xsquare import Turtle2Env, Turtle2RobotConfig, Turtle2RobotState
 from .xsquare import tasks as xsquare_tasks
 
@@ -62,6 +61,4 @@ __all__ = [
     "Turtle2RobotState",
     "xsquare_tasks",
     "RealWorldEnv",
-    "So101Config",
-    "So101DualEnv",
 ]

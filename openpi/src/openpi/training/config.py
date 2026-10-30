@@ -20,7 +20,6 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
-import openpi.policies.so101_policy as so101_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -273,55 +272,6 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
 
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=self.repack_transforms,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-            action_sequence_keys=self.action_sequence_keys,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class LeRobotSo101DataConfig(DataConfigFactory):
-    """Dual SO101 (12-dim joint space, LeRobot degrees; gripper 0-100) recorded with so101/record.sh."""
-
-    # Joints become deltas w.r.t. the current state; each gripper stays absolute.
-    use_delta_joint_actions: bool = True
-    default_prompt: str | None = None
-    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
-        default=_transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "images": {
-                            "cam_high": "observation.images.cam_high",
-                            "cam_left_wrist": "observation.images.cam_left_wrist",
-                            "cam_right_wrist": "observation.images.cam_right_wrist",
-                        },
-                        "state": "observation.state",
-                        "actions": "action",
-                        "prompt": "prompt",  # filled from the recorded task (prompt_from_task)
-                    }
-                )
-            ]
-        )
-    )
-    action_sequence_keys: Sequence[str] = ("action",)
-
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        data_transforms = _transforms.Group(
-            inputs=[so101_policy.So101Inputs()],
-            outputs=[so101_policy.So101Outputs()],
-        )
-        if self.use_delta_joint_actions:
-            delta_action_mask = _transforms.make_bool_mask(5, -1, 5, -1)
-            data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(delta_action_mask)],
-                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-            )
-        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=self.repack_transforms,
@@ -885,44 +835,6 @@ _CONFIGS = [
         num_train_steps=40_000,
     ),
 
-    # Dual SO101 (so101/record.sh -> ./lerobot_data/so101_dual). Full fine-tuning needs a multi-GPU or >=40 GB card;
-    # the LoRA variant fits a single 24 GB GPU.
-    TrainConfig(
-        name="pi05_so101_dual",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
-        data=LeRobotSo101DataConfig(
-            repo_id="./lerobot_data/so101_dual",
-            assets=AssetsConfig(asset_id="so101_dual"),
-            base_config=DataConfig(prompt_from_task=True, video_backend="pyav"),
-        ),
-        batch_size=32,
-        weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_base/params"),
-        num_train_steps=30_000,
-    ),
-    TrainConfig(
-        name="pi05_so101_dual_lora",
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            action_horizon=50,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ),
-        data=LeRobotSo101DataConfig(
-            repo_id="./lerobot_data/so101_dual",
-            assets=AssetsConfig(asset_id="so101_dual"),
-            base_config=DataConfig(prompt_from_task=True, video_backend="pyav"),
-        ),
-        batch_size=16,
-        weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi05_base/params"),
-        num_train_steps=30_000,
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True,
-            action_horizon=50,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-        ema_decay=None,
-    ),
     TrainConfig(
             name="pi05_connect_strings",
             model=pi0_config.Pi0Config(pi05=True,),
