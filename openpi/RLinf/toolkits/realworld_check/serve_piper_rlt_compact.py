@@ -26,6 +26,12 @@ def main() -> None:
     parser.add_argument("--rlt-token-checkpoint", required=True)
     parser.add_argument("--port", type=int, default=6006)
     parser.add_argument(
+        "--state-dim", type=int, default=14, help="Robot state size: 14 = Piper, 12 = dual SO101."
+    )
+    parser.add_argument(
+        "--prompt", default=None, help="Task prompt when the config has no default_prompt (SO101 configs)."
+    )
+    parser.add_argument(
         "--benchmark",
         action="store_true",
         help="Warm and time model-only requests, then exit without listening or ROS/CAN.",
@@ -41,9 +47,9 @@ def main() -> None:
     from openpi.training import config
 
     train_config = config.get_config(args.config)
-    prompt = train_config.data.default_prompt
+    prompt = args.prompt or train_config.data.default_prompt
     if not prompt:
-        parser.error("The selected model config must define default_prompt.")
+        parser.error("Pass --prompt or use a model config with default_prompt.")
     original = policy_config.create_trained_policy(
         train_config,
         args.checkpoint_dir,
@@ -55,7 +61,7 @@ def main() -> None:
     policy = CompactRLTPolicy(original)
     # Model-only warmup: no ROS publisher or CAN is constructed by this script.
     observation = {
-        "state": np.zeros(14, np.float32),
+        "state": np.zeros(args.state_dim, np.float32),
         "prompt": prompt,
         "images": {
             name: np.zeros((3, 224, 224), np.uint8)

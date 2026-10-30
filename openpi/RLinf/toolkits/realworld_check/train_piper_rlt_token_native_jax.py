@@ -36,6 +36,12 @@ def main() -> int:
     parser.add_argument("--min-lr", type=float, default=2.5e-6)
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--cpu-offload",
+        action="store_true",
+        help="Keep RL-token parameters, gradients and AdamW state on the CPU (FSDP "
+        "CPUOffload) so a single 24 GB GPU fits next to the frozen VLA; slower.",
+    )
     args = parser.parse_args()
 
     # torchrun exposes every GPU to every child by default.  Orbax restores a
@@ -63,6 +69,7 @@ def main() -> int:
     import torch
     import torch.distributed as dist
     from torch.distributed.fsdp import (
+        CPUOffload,
         FullOptimStateDictConfig,
         FullStateDictConfig,
         FullyShardedDataParallel,
@@ -142,6 +149,7 @@ def main() -> int:
         sync_module_states=True,
         limit_all_gathers=True,
         use_orig_params=False,
+        cpu_offload=CPUOffload(offload_params=args.cpu_offload),
     )
     optimizer = torch.optim.AdamW(
         rlt.parameters(),
