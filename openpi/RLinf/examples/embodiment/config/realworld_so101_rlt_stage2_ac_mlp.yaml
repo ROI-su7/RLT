@@ -332,7 +332,7 @@ env:
       home_position: null
       home_speed_deg_s: 30.0
       keyboard: ${oc.env:RLINF_SO101_KEYBOARD,evdev}
-      key_file: ${oc.env:RLINF_SO101_KEY_FILE,~/.so101_rlt_keys}
+      key_file: ${oc.env:HOME}/.so101_rlt_keys
       action_chunk_size: 10
       rlt_subsample_stride: 2
       # No Piper-style RTC bridge on SO101.

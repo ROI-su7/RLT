@@ -144,6 +144,16 @@ bash openpi/RLinf/examples/embodiment/run_piper_rlt_stage2_single.sh
 
 键盘：`I` 开始推理，`B` 进入关键窗口并记录，`T` 人工接管（主臂遥操作），`C` 成功，`X` 失败，`H` 回初始位，空格暂停。
 
+三种 Stage 2 运行方式（ROS 后端与 Stage 2 配置要成对选择）：
+
+| 方式 | ROS 后端（`start_piper_ros_tmux.sh`） | Stage 2 配置（`RLINF_STAGE2_CONFIG_NAME`） | 人工接管 |
+|---|---|---|---|
+| 四 CAN + 主臂接管（默认） | `RLINF_PIPER_TAKEOVER_BACKEND=four_can` | `realworld_piper_rlt_stage2_ac_mlp` | `T`：主臂对齐后接管两条从臂 |
+| 只用两条从臂 | `RLINF_PIPER_TAKEOVER_BACKEND=followers` | `realworld_piper_rlt_stage2_followers` | 无（`T` 被禁用），只采集策略数据 |
+| 旧版主从模式 | `RLINF_PIPER_TAKEOVER_BACKEND=legacy` | `realworld_piper_rlt_stage2_ac_mlp` + `env.train.piper_control_mode=2` 等 | mode 2 接管 |
+
+只从臂方式会启动 `start_inference_followers.launch rlt_stage2:=true`，不打开主臂 CAN。
+
 调度（配置 `openpi/RLinf/examples/embodiment/config/realworld_piper_rlt_stage2_ac_mlp.yaml`）：
 
 1. 预热：按 B 后 π0.5 继续控制并记录，直到回放达到 1000 条；
