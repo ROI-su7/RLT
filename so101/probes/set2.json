@@ -1,0 +1,118 @@
+{
+  "arms": {
+    "follower": {
+      "joints": {
+        "shoulder_pan": {
+          "id": 1,
+          "model": 777,
+          "pos": 2113,
+          "min": 960,
+          "max": 3209,
+          "homing": 2341
+        },
+        "shoulder_lift": {
+          "id": 2,
+          "model": 777,
+          "pos": 906,
+          "min": 906,
+          "max": 3111,
+          "homing": 2053
+        },
+        "elbow_flex": {
+          "id": 3,
+          "model": 777,
+          "pos": 3091,
+          "min": 888,
+          "max": 3091,
+          "homing": 2145
+        },
+        "wrist_flex": {
+          "id": 4,
+          "model": 777,
+          "pos": 2772,
+          "min": 828,
+          "max": 3121,
+          "homing": 2618
+        },
+        "wrist_roll": {
+          "id": 5,
+          "model": 777,
+          "pos": 2001,
+          "min": 0,
+          "max": 4095,
+          "homing": 3340
+        },
+        "gripper": {
+          "id": 6,
+          "model": 777,
+          "pos": 1457,
+          "min": 1450,
+          "max": 2882,
+          "homing": 2323
+        }
+      },
+      "voltage_v": 12.3,
+      "torque_enabled": false,
+      "pid_p": 16,
+      "by_id": "usb-1a86_USB_Single_Serial_5B14110654-if00",
+      "role": "follower"
+    },
+    "leader": {
+      "joints": {
+        "shoulder_pan": {
+          "id": 1,
+          "model": 777,
+          "pos": 2152,
+          "min": 771,
+          "max": 3461,
+          "homing": 806
+        },
+        "shoulder_lift": {
+          "id": 2,
+          "model": 777,
+          "pos": 3945,
+          "min": 0,
+          "max": 4095,
+          "homing": 1612
+        },
+        "elbow_flex": {
+          "id": 3,
+          "model": 777,
+          "pos": 24,
+          "min": 1914,
+          "max": 4122,
+          "homing": 2391
+        },
+        "wrist_flex": {
+          "id": 4,
+          "model": 777,
+          "pos": 2546,
+          "min": 804,
+          "max": 3088,
+          "homing": 3851
+        },
+        "wrist_roll": {
+          "id": 5,
+          "model": 777,
+          "pos": 2161,
+          "min": 0,
+          "max": 4095,
+          "homing": 2608
+        },
+        "gripper": {
+          "id": 6,
+          "model": 777,
+          "pos": 2047,
+          "min": 2041,
+          "max": 3210,
+          "homing": 1988
+        }
+      },
+      "voltage_v": 5.4,
+      "torque_enabled": false,
+      "pid_p": 32,
+      "by_id": "usb-1a86_USB_Single_Serial_5B14112595-if00",
+      "role": "leader"
+    }
+  }
+}

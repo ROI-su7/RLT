@@ -15,7 +15,7 @@
 set -euo pipefail
 RLT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export RLT_ROOT
-STEPS=(01_system_deps 02_ros 03_openpi_env 04_rlt_env 05_base_assets)
+STEPS=(01_system_deps 02_ros 03_openpi_env 04_rlt_env 05_base_assets)  # 06_so101_env: bash env/install_all.sh --only 06
 SKIP_ROS=0
 ONLY=""
 while [[ $# -gt 0 ]]; do
