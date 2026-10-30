@@ -37,6 +37,13 @@ if [[ $CHECK_ROS == 1 ]]; then
     if [[ -f "$RLT_ROOT/$ws/devel/setup.bash" ]]; then ok "$ws built"; else bad "$ws not built: run env/steps/02_ros.sh"; fi
   done
   if /usr/bin/python3 -c "import piper_sdk" 2>/dev/null; then ok "system python piper_sdk"; else bad "system python lacks piper_sdk"; fi
+  # Four-CAN collection/inference/takeover mux and CAN guard (system Python, like the ROS nodes).
+  if (cd "$RLT_ROOT/cobot_magic/Piper_ros_private-ros-noetic/src/piper" &&
+      /usr/bin/python3 -m unittest discover -s test -p "test_*.py" >/dev/null 2>&1); then
+    ok "Piper ROS takeover/mux tests"
+  else
+    bad "Piper ROS takeover/mux tests (run: cd cobot_magic/Piper_ros_private-ros-noetic/src/piper && python3 -m unittest discover -s test)"
+  fi
 fi
 
 echo "== Unit tests (RLT / Piper)"
