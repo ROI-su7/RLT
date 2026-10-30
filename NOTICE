@@ -1,0 +1,12 @@
+This repository combines code under different licenses:
+
+- openpi/                     fork of Physical-Intelligence/openpi, Apache-2.0 (openpi/LICENSE, Gemma terms in openpi/LICENSE_GEMMA.txt)
+- openpi/RLinf/               fork of RLinf/RLinf, Apache-2.0 (openpi/RLinf/LICENSE)
+- openpi/third_party/lerobot/ huggingface/lerobot 0.1.0, Apache-2.0 (openpi/third_party/lerobot/LICENSE)
+- cobot_magic/camera_ws/src/realsense-ros/      IntelRealSense/realsense-ros, Apache-2.0
+- cobot_magic/camera_ws/src/ros_astra_camera/   orbbec/ros_astra_camera, see its package license
+- cobot_magic/aloha-devel/    ACT / robomimic code from the Cobot Magic (AgileX) distribution, see the bundled licenses
+- Git submodules keep their upstream licenses:
+  cobot_magic/Piper_ros_private-ros-noetic (ROI-su7/piper-4can-teleop-data-inference),
+  cobot_magic/collect_data/piper_sdk_demo (agilexrobotics/piper_sdk_demo),
+  cobot_magic/aloha_des/src/mobile_aloha_sim (agilexrobotics/mobile_aloha_sim)

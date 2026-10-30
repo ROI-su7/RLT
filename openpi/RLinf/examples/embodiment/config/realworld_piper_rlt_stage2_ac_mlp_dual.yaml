@@ -1,0 +1,32 @@
+defaults:
+  - realworld_piper_rlt_stage2_ac_mlp
+  - _self_
+
+# Two-host deployment:
+#   rank 0 (192.168.85.129): two RTX 3090s for rollout and actor training
+#   rank 1 (192.168.209.107): Piper ROS, cameras, keyboard and EnvWorker
+cluster:
+  num_nodes: 2
+  component_placement:
+    rollout:
+      node_group: gpu
+      placement: 0
+    actor:
+      node_group: gpu
+      placement: 1
+    env:
+      node_group: piper
+      placement: 0
+  node_groups:
+    - label: gpu
+      node_ranks: 0
+    - label: piper
+      node_ranks: 1
+
+# These files are consumed by rollout on the GPU node.  The cluster account's
+# home is site-specific, so the launch script exports an absolute repo path.
+rollout:
+  rlt_feature_model:
+    # No PyTorch π0.5 checkpoint is loaded. Stage 2 consumes the original JAX
+    # pi05_wire action/prefix pair and this native-JAX-trained RLT token.
+    rlt_token_checkpoint: ${oc.env:RLINF_STAGE1_RLT_TOKEN}

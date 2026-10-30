@@ -1,0 +1,13 @@
+<launch>
+  <!-- Compatibility wrapper. The unified launch owns mode selection. -->
+  <arg name="auto_enable" default="true" />
+  <arg name="leaders_preisolated" default="false" />
+
+  <include file="$(find piper)/launch/start_ms_piper.launch">
+    <arg name="mode" value="2" />
+    <arg name="auto_enable" value="$(arg auto_enable)" />
+    <arg
+        name="mode2_leaders_preisolated"
+        value="$(arg leaders_preisolated)" />
+  </include>
+</launch>

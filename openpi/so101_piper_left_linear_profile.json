@@ -1,0 +1,112 @@
+{
+  "format_version": 1,
+  "side": "left",
+  "source": "so101_piper_left_samples_v3.json",
+  "locked_piper_indices": [
+    3
+  ],
+  "mappings": [
+    {
+      "name": "j1",
+      "leader_key": "shoulder_pan",
+      "piper_index": 0,
+      "leader_reference": -0.3956043956043956,
+      "piper_reference": 0.01718234,
+      "gain": -0.8248839491027119,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "selected_sample": 2,
+      "leader_delta": 28.30769230769232,
+      "piper_delta": -0.40754417200000004,
+      "dominance_score": 23350561.020753704,
+      "leader_observed_range": [
+        -6.725274725274732,
+        27.912087912087927
+      ]
+    },
+    {
+      "name": "j2",
+      "leader_key": "shoulder_lift",
+      "piper_index": 1,
+      "leader_reference": 176.30769230769232,
+      "piper_reference": -0.038708236,
+      "gain": 0.5353038236002334,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "selected_sample": 3,
+      "leader_delta": 31.120879120879067,
+      "piper_delta": 0.29075659200000004,
+      "dominance_score": 13.42805487447597,
+      "leader_observed_range": [
+        176.21978021978023,
+        207.4285714285714
+      ]
+    },
+    {
+      "name": "j3",
+      "leader_key": "elbow_flex",
+      "piper_index": 2,
+      "leader_reference": 97.4065934065934,
+      "piper_reference": 0.028451164,
+      "gain": 1.3853020742325786,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "selected_sample": 4,
+      "leader_delta": -13.450549450549431,
+      "piper_delta": -0.325208492,
+      "dominance_score": 5.320321872493223,
+      "leader_observed_range": [
+        83.95604395604397,
+        97.4065934065934
+      ]
+    },
+    {
+      "name": "j5",
+      "leader_key": "wrist_flex",
+      "piper_index": 4,
+      "leader_reference": 51.91208791208791,
+      "piper_reference": 0.4308668,
+      "gain": 0.45369852955398926,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "selected_sample": 5,
+      "leader_delta": -56.61538461538461,
+      "piper_delta": -0.4483108,
+      "dominance_score": 36.58258634329517,
+      "leader_observed_range": [
+        -4.703296703296701,
+        52.7032967032967
+      ]
+    },
+    {
+      "name": "j6",
+      "leader_key": "wrist_roll",
+      "piper_index": 5,
+      "leader_reference": -4.087912087912088,
+      "piper_reference": 0.0,
+      "gain": -1.1534255897473022,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "selected_sample": 6,
+      "leader_delta": -33.49450549450549,
+      "piper_delta": 0.6742803760000001,
+      "dominance_score": 54.81566453108672,
+      "leader_observed_range": [
+        -37.58241758241758,
+        -3.824175824175825
+      ]
+    },
+    {
+      "name": "gripper",
+      "leader_key": "gripper",
+      "piper_index": 6,
+      "leader_reference": 0.9053497942386831,
+      "piper_reference": -0.0018,
+      "gain": 0.001062062937062937,
+      "gain_unit": "piper_m_per_so101_unit",
+      "selected_sample": 7,
+      "leader_delta": 94.15637860082305,
+      "piper_delta": 0.09999999999999999,
+      "dominance_score": 25.813430634113075,
+      "leader_observed_range": [
+        0.9053497942386831,
+        95.06172839506173
+      ]
+    }
+  ]
+}

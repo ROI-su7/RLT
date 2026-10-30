@@ -1,0 +1,47 @@
+defaults:
+  - model/recap_value_model@advantage.model
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:REPO_PATH}/examples/offline_rl/config/
+  job:
+    chdir: false
+
+advantage:
+  value_checkpoint: ${oc.env:RECAP_VALUE_CHECKPOINT}
+  batch_size: 2
+  num_dataloader_workers_per_gpu: 0
+  prefetch_factor: 2
+  flush_interval: 32
+  discount_next_value: true
+  tag: piper_recap_adv_v1
+  returns_tag: piper_recap_v1
+  positive_quantile: 0.3
+  # RECAP (pi*0.6 IV-B, V-D): "force I_t = True for all corrections", i.e. every
+  # human-controlled frame is positive regardless of threshold or outcome.
+  # intervention_success_only: true is the Evo-RL variant (successful episodes only).
+  force_intervention_positive: true
+  intervention_success_only: false
+  model:
+    siglip_path: ${oc.env:RECAP_SIGLIP_DIR}
+    gemma3_path: ${oc.env:RECAP_GEMMA_DIR}
+    tokenizer_path: ${oc.env:RECAP_GEMMA_DIR}
+    critic_expert_variant: gemma_1m
+data:
+  robot_type: piper
+  model_type: pi05
+  train_data_paths:
+    - dataset_path: ${oc.env:RECAP_DATASET}
+      type: rollout
+      weight: 1.0
+      robot_type: piper
+  advantage_lookahead_step: 10
+  gamma: 1.0
+distributed:
+  enabled: false
+  backend: nccl
+  timeout: 3600

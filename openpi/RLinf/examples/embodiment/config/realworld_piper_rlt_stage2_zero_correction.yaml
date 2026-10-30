@@ -1,0 +1,36 @@
+# Diagnostic A: Actor direct-execution path with the Actor correction forced to zero.
+#
+# Every chunk after ``b`` runs in Actor direct-execution mode (residual/executor
+# EMA and RTC bridge bypassed, Actor command profile active), but the executed
+# target is exactly the JAX reference. Compare with plain JAX inference:
+#   - still jittery -> the execution path (EMA/bridge/tracker) is the cause;
+#   - smooth        -> the Actor's correction is the cause.
+#
+# Launch: RLINF_STAGE2_CONFIG_NAME=realworld_piper_rlt_stage2_zero_correction \
+#         bash examples/embodiment/run_piper_rlt_stage2_single.sh
+# Do not set RLINF_REPLAY_LOAD_PATH or RLINF_STAGE2_RESUME_DIR. The run writes
+# into its own logs/<time>-realworld_piper_rlt_stage2_zero_correction directory
+# and does not auto-save replay or checkpoints, so the main campaign is untouched.
+defaults:
+  - realworld_piper_rlt_stage2_ac_mlp
+  - _self_
+
+runner:
+  logger:
+    experiment_name: "piper_wire_rlt_stage2_zero_correction"
+  save_interval: -1
+
+algorithm:
+  rlt_schedule:
+    # This diagnostic exercises the direct-execution path explicitly.
+    actor_direct_execution: true
+    # The Actor output is clamped to zero, so its weights are irrelevant and
+    # the takeover gate can open immediately.
+    warmup_post_collect_updates: 0
+    max_actor_reference_arm_delta: 0.0
+    max_actor_reference_gripper_delta: 0.0
+    actor_exploration:
+      enable: false
+  replay_buffer:
+    auto_save: false
+    load_path: null

@@ -1,0 +1,14 @@
+defaults:
+  - realworld_piper_rlt_stage2_ac_mlp_dual
+  - _self_
+
+# Dedicated mode-1 shared-CAN campaign: retain the proven two-host placement
+# and native leader/follower control, but begin learner updates only after 500
+# newly collected, action-aligned transitions. Keep G=5, so the JAX reference
+# remains in control until the initial 2,500 critic updates are complete.
+algorithm:
+  rlt_schedule:
+    warmup_min_size: 500
+    warmup_post_collect_updates: 2500
+  replay_buffer:
+    min_buffer_size: 500

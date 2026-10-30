@@ -1,0 +1,559 @@
+defaults:
+  - env/realworld_piper_wire@env.train
+  - env/realworld_piper_wire@env.eval
+  - hybrid_engines/fsdp@actor.fsdp_config
+  - weight_syncer/patch_syncer@weight_syncer
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+# Single-machine deployment: the GPU training/inference process and the local
+# ROS/Piper environment share node 0. The Piper environment reads its ROS
+# topics locally; it does not require an RLinf hardware plugin.
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor:
+      node_group: gpu
+      placement: 0
+    rollout:
+      node_group: gpu
+      placement: 0
+    env:
+      node_group: gpu
+      placement: 0
+  node_groups:
+    - label: gpu
+      node_ranks: 0
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: "../results"
+    project_name: rlinf-piper-rlt
+    experiment_name: "piper_wire_rlt_stage2"
+    logger_backends: ["tensorboard"]
+  max_epochs: 8000
+  max_steps: -1
+  only_eval: false
+  val_check_interval: -1
+  # Publish the latest actor to rollout after every completed learner loop.
+  weight_sync_interval: 1
+  # Keep periodic recovery checkpoints while rollout collection and learner
+  # updates run asynchronously.
+  # Match the official RLT checkpoint cadence; saving every learner loop can
+  # dominate wall time on the shared filesystem.
+  save_interval: 50
+  resume_dir: null
+  ckpt_path: null
+
+algorithm:
+  # Official asynchronous off-policy loop: rollout collection and learning
+  # proceed independently, while learner work remains bounded by the amount of
+  # robot data collected.
+  # RLT paper Sec. V: update-to-data ratio G=5. Each new chunk transition
+  # creates exactly five critic-update credits; the learner does not spin when
+  # no new robot data arrives.
+  update_epoch: 5
+  # Start a clean campaign only after 1000 transitions collected through the
+  # verified native-JAX/PIL visual path. ``b`` records the critical window but
+  # continues executing the JAX reference until the actor warmup is complete.
+  rlt_schedule:
+    enable: true
+    warmup_min_size: 1000
+    # After 1000 replay transitions, 3000 completed
+    # learner updates are required before the actor may execute.
+    warmup_post_collect_updates: 3000
+    train_every_episodes: 0
+    train_every_transitions: 1
+    max_updates_per_train_step: 25
+    # Do not reject an entire actor chunk. Bound each actor/reference
+    # correction instead; the learner applies the same transform.
+    max_actor_takeover_arm_deviation: null
+    max_actor_takeover_gripper_deviation: null
+    # Actor chunks run on the JAX executor (RTC bridge, plan[15:25) window,
+    # boundary blend, executor EMA). Direct execution stopped the arms at
+    # every chunk boundary and replayed plan[0:10] from rest; on 2026-10-14
+    # zero-correction runs it stalled 0.3-1 cm before insertion while plain
+    # JAX inserted. Actor smoothness now comes from the DCT projection and
+    # the reference bound below.
+    actor_direct_execution: false
+    # 2026-10-14 (13 rescues): the Actor's pre-takeover correction pointed the
+    # same way as the human's in 12/13 cases, but averaged 0.0038 rad vs the
+    # human's 0.0115 rad, and its target hit the old 0.01 bound 19% of the
+    # time. 0.015 covers the typical human correction with margin.
+    # 2026-10-20: per joint J1..J6 of each arm. Operators finish the insertion
+    # with a consistent wrist twist of 15-40 mrad (L4 -20, L6 -14, R5 -27,
+    # R6 -40 mrad vs the JAX plan), beyond 0.015; the wrist joints J4-J6
+    # also set the concentricity. The shoulder/elbow joints keep 0.015.
+    max_actor_reference_arm_delta: [0.015, 0.015, 0.015, 0.04, 0.04, 0.04]
+    max_actor_reference_gripper_delta: 0.0015
+    actor_refinement_smoothing_alpha: null
+    actor_refinement_tail_taper_steps: 0
+    # Project every Actor correction (actor - JAX reference) onto the lowest
+    # 3 DCT modes of the 10-step chunk before the bound above (cutoff ~1.5 Hz
+    # at 15 Hz). Zero-phase within the chunk, no tail and no taper; route and
+    # learner share the transform, so Q only scores/pushes slow corrections.
+    # null disables it; "poly" keeps polynomials up to degree size-1.
+    actor_correction_basis_type: dct
+    actor_correction_basis_size: 3
+    # Execution continuity of the bounded correction (rollout side only).
+    # 2026-10-14: the RTC bridge executed the raw VLA suffix, so 32% of Actor
+    # steps carried no correction - a ~1 Hz push-release that looked like
+    # large, slow corrections. Hold the last correction through the bridge,
+    # and let each step move at most slew x steps from the correction held
+    # before it (from zero at every takeover). 0.0003 rad/step lagged the
+    # Actor's target by >1 mrad 54% of the time, too slow to align 2-3 mm
+    # before contact; 0.0008 reaches 0.01 rad in ~13 steps (< 1 s).
+    actor_correction_hold_through_bridge: true
+    # 2026-10-20: per joint J1..J6 of each arm, scaled with the wider wrist
+    # bound (0.0008 x 0.04 / 0.015): J4-J6 reach 0.04 rad in ~20 steps
+    # (~1.3 s), about as fast as the operators' wrist twist.
+    actor_correction_slew_arm: [0.0008, 0.0008, 0.0008, 0.002, 0.002, 0.002]
+    actor_correction_slew_gripper: 0.0001
+    # Plan steps advanced per executed step inside the critical window (after
+    # B); 1.0 = native JAX speed. 2026-10-14: in the last ~3 chunks before
+    # contact JAX moved 0.0019 rad/step (4x a human aligning), i.e. 0.029 rad
+    # per 15-step decision cycle vs at most 0.012 of correction change.
+    # 0.4 brought that to ~0.011 rad per cycle, but 3/3 slowed episodes failed:
+    # the Actor's corrections were unchanged (its braking component simply
+    # vanished) and JAX, re-planning after only ~6 executed plan steps, drifted
+    # further off. Back to native speed.
+    critical_reference_speed: 1.0
+    # The Actor's corrections point the operator's way (85% of 20 rescues) but
+    # are ~1/3 of their size. Keep the VLA plan as the Actor input on takeover
+    # steps (BC still targets the operator action) so rescues teach the
+    # correction relative to JAX instead of "copy the reference".
+    human_rows_keep_jax_reference: true
+    # Smooth exploration on Actor chunks while collecting (rollout train
+    # mode): Gaussian noise drawn only on the same 3 DCT modes, per-step RMS
+    # arm_std / gripper_std, then projected and bounded like any correction,
+    # so it cannot add within-chunk jitter. Without it the robot executes the
+    # mean Actor only and the critic never sees alternative corrections
+    # (q_pi == q_data). Every eval_every_n_episodes-th Actor episode runs the
+    # mean Actor; the log tags each episode EXPLORE or EVAL.
+    # 2026-10-14: per-chunk i.i.d. noise (chunk_correlation 0) swung the
+    # correction 0.0037 rad between chunks (46% sign flips) and cut progress
+    # efficiency to 0.10-0.14 vs JAX 0.34-0.46. The draw is now an AR(1)
+    # process across the chunks of an episode: with 0.9 it drifts over ~10
+    # chunks and changes by only 0.45 x arm_std (~0.0013 rad) per chunk, less
+    # than the mean Actor's own chunk-to-chunk change (~0.002 rad). Only
+    # Actor chunks are affected; the warmup runs pure JAX either way.
+    actor_exploration:
+      enable: true
+      arm_std: 0.003
+      gripper_std: 0.0005
+      chunk_correlation: 0.9
+      eval_every_n_episodes: 3
+  group_size: 1
+  agg_q: min
+  # Actor maximizes min(Q1, Q2): less noisy than Q1 alone and conservative
+  # against over-estimated actions near the correction bound.
+  actor_agg_q: min
+  # TD3 target policy smoothing in physical units (rad / m), added to the
+  # target Actor's action before the shared execution transform.
+  target_policy_smoothing:
+    enable: true
+    arm_std: 0.004
+    arm_clip: 0.008
+    gripper_std: 0.0005
+    gripper_clip: 0.001
+  enable_drq: false
+  q_head_type: ${actor.model.q_head_type}
+  adv_type: embodied_sac
+  loss_type: rlt_ac
+  loss_agg_func: "token-mean"
+  # Raw BC; Q sees reference-bounded actions. Pure BC while the critic warms
+  # up (RL-Token-Pi05), then the openpi-RLT ratio Q/BC = 0.1/5. Offline A/B on
+  # the 62-episode replay (2026-10-14): Q 0.5 drove 15-24% of joints to the
+  # +/-0.01 rad bound where the critic over-valued them (Q(pi)-Q(data) up to
+  # +0.11), i.e. the large back-and-forth corrections; Q 0.1 kept 7%.
+  # 2026-10-19: Q 0.1 switched on in one step still drove J2 of both arms to
+  # +0.011..+0.015 rad in every Actor chunk (Q(pi)-Q(data) up to +0.29),
+  # closing the tips faster than JAX and crossing them; 2/2 Actor episodes
+  # failed. Then 0.005, ramped in over 2000 updates (actor_weight_schedule).
+  # 2026-10-20: at 0.005 the critic (q_action_contrast ~0.02) moved the Actor
+  # only ~0.6 mrad (~0.2 mm) from BC, i.e. no RL effect; back to 0.1, ramped.
+  # 2026-10-22: the 0.1 ramp (run 10-22 10:46) turned the critic's action
+  # gradient against the operator's correction (cos +0.12 -> -0.08), inflated
+  # Q (q_data 0.23 -> 0.64 with no more successes) and pushed fixed wrist/R2
+  # offsets (L5 -0.014, R4 +0.010 rad) that crossed the heads. Back to 0.005
+  # until the state carries the head pose and dQ/da agrees with the operator.
+  # 2026-10-23: fresh campaign (all replay deleted) with the v2 head pose in
+  # every transition from the start; Q 0.1 again, ramped in after the
+  # post-collect warmup (actor_weight_schedule).
+  # 2026-10-23 15:14: within 2 min of the 0.1 ramp the critic over-valued
+  # unseen corrections (q_pi 1.1-1.28 > the max return 1, q_data 0.35 ->
+  # 0.95) and the Actor's lateral offset grew to -35..-64 px. Its rows were
+  # removed and the campaign resumes from global_step_100 with Q 0.01.
+  q_weight: 0.01
+  bc_weight: 5.0
+  delta_weight: 10.0
+  actor_weight_schedule:
+    enable: true
+    # Fresh campaign (2026-10-23): pure BC through the 3000 post-collect
+    # updates (rlt_schedule.warmup_post_collect_updates), then Q ramps in.
+    warmup_updates: 3000
+    # Linear BC 10 -> 5 and Q 0 -> online_q_weight after the warmup.
+    ramp_updates: 2000
+    warmup_bc_weight: 10.0
+    warmup_q_weight: 0.0
+    online_bc_weight: 5.0
+    # openpi-RLT ratio Q/BC = 0.1/5. A4 (2026-10-15) had lowered Q to 0.02
+    # because on the bridge-5 replay dQ/da agreed with the operator only weakly
+    # (cos +0.14); the bridge-15 campaign restarts from empty replay with the
+    # original 0.1. Watch actor/critic_human_grad_cos and, as an exploitation
+    # sign, q_pi - q_data > 0.05 or action_ref_abs_mean > 0.010 rad.
+    online_q_weight: 0.01
+  # Terminal 0/1 rewards bound the true Q to [0, 1]; clip the TD target there.
+  # With head_pose_shaping the upper bound grows by its largest |potential|.
+  td_target_clip: [0.0, 1.0]
+  # Potential-based shaping (rlinf/algorithms/rlt/head_pose_shaping.py):
+  # phi = -weight * gate(|dy|) * min(|dx|, clip_px) / scale_px, gate 1 within
+  # near_px of contact along the insertion axis, 0 beyond far_px. A chunk that
+  # removes a 10 px lateral offset at contact earns +0.05 (success = 1); it
+  # leaves the optimal policy unchanged but tells the critic, chunk by chunk,
+  # whether a correction centred the heads. Only transitions whose states
+  # both see the heads are shaped (the replay rows from before the image log
+  # carry visible = 0).
+  head_pose_shaping:
+    enable: true
+    weight: 0.05
+    scale_px: 10.0
+    clip_px: 30.0
+    near_px: 15.0
+    far_px: 60.0
+  # Takeover rows stored before human_rows_keep_jax_reference carry the
+  # operator action as their reference (592 rows on 2026-10-15) and would
+  # teach a zero correction exactly where the operator corrected.
+  bc_exclude_replaced_human_reference: true
+  # Non-operator rows target a zero residual; near takeover states they
+  # cancelled the operator corrections (useful correction on unseen takeovers
+  # 0.02). Held-out sweep 2026-10-15: 0.03 keeps the Actor on JAX where JAX
+  # was fine (0.0004 rad) while correcting misaligned states (useful 0.11,
+  # off-direction 0.25); 0.0 corrected everywhere (0.0046 rad).
+  # 2026-10-23 offline ablation (2500 updates from 15:52 ckpt 500, held-out
+  # 16:42 episodes): at 0.03 the Actor learned a state-independent lateral
+  # offset (same sign for dx<0 and dx>0, up to 3.3 mm, flipping between
+  # checkpoints) from the operator rows; 1.0 cut it to ~0.5 mm and the
+  # residual from 3.1 to 0.9 mrad. No setting learned a dx-dependent fix.
+  bc_policy_row_weight: 1.0
+  # Off for the residual Actor: its base is the reference itself.
+  reference_dropout_prob: 0.0
+  bootstrap_type: standard
+  # Full chunks bootstrap with gamma^10. Partial rows use the left-aligned
+  # action_valid_mask and bootstrap with gamma^executed_steps.
+  # openpi-RLT timing (15 Hz, C=10): 0.9867^10 = 0.875 per chunk.
+  gamma: 0.9867
+  tau: 0.005
+  entropy_tuning:
+    alpha_type: fixed_alpha
+    initial_alpha: 0.0
+    optim:
+      lr: 3.0e-4
+      lr_scheduler: torch_constant
+      clip_grad: 10.0
+  replay_buffer:
+    enable_cache: true
+    cache_size: 200
+    # One replay file is one action-aligned transition: a chunk row or a
+    # stride-2 window. A fresh Stage-2 learner does not update until 1000
+    # transitions have been collected.
+    min_buffer_size: 1000
+    sample_window_size: 20000
+    auto_save: true
+    save_transitions: true
+    # RL-Token-Pi05 shares (0.4/0.3/0.2, 10% uniform), the same batch for
+    # the Actor and the critic. Empty strata (no operator rows during the
+    # warmup) fall back to uniform. The human stratum only holds takeover
+    # rows that kept the JAX reference (rlt_human_teach).
+    sample_strategy: rlt_stratified
+    stratified_ratios:
+      recent_online: 0.4
+      warmup: 0.3
+      human: 0.2
+    # RLIF-style (2026-10-19): an operator takeover (T) ends the policy's
+    # segment. The last machine transition before T is sampled as terminal
+    # with reward 0 instead of bootstrapping from the operator's rescue; all
+    # 42 takeovers in the 19:35 replay were rescued, so pre-takeover approaches
+    # were valued like successes. Operator rows keep their reward and BC role.
+    # Applied when sampling only; replay files are unchanged.
+    takeover_as_failure: true
+    # Optional persisted RLT transition buffer to preload before collection.
+    # The Stage-2 launch script passes this only for an intentional recovery
+    # or a vetted historical-buffer merge; normal runs start from an empty one.
+    load_path: ${oc.env:RLINF_REPLAY_LOAD_PATH,null}
+  target_update_freq: 1
+  target_update_type: all
+  train_actor_steps: 2
+  # Two critic updates per online-actor update. The EMA target model keeps the
+  # existing every-update Polyak cadence and supplies both target actor and Q.
+  critic_actor_ratio: 2
+  critic_subsample_size: 0
+  backup_entropy: false
+
+env:
+  group_name: EnvGroup
+  train:
+    rollout_epoch: 1
+    total_num_envs: 1
+    # A terminal C/X/Q must first return its reward and terminal flags through
+    # the active action chunk to the replay writer.  The mux reset then blocks
+    # for the next I, so automatic reset here would otherwise swallow that
+    # terminal chunk before it can be persisted.
+    auto_reset: false
+    ignore_terminations: false
+    keyboard_reward_wrapper: piper_rlt
+    # After every c/x/q/timeout, hold the arms and wait for 'i' so the
+    # operator can reset all four wires without restarting the process.
+    manual_start_gate: true
+    # Match the validated unmodified Piper OpenPI runtime.
+    max_episode_steps: 4000
+    # One complete C=10 action chunk per asynchronous env/rollout exchange.
+    max_steps_per_rollout_epoch: 10
+    # z_rl of stride-window observations comes from the robot-local native-JAX
+    # server started with --rlt-token-checkpoint (prefix-only requests), so
+    # only 2048-D tokens cross the websocket. Unless set, the expected encoder
+    # fingerprint is computed from rollout.rlt_feature_model.rlt_token_checkpoint.
+    rlt_stride_features:
+      host: ${oc.env:RLINF_JAX_PREFIX_HOST,127.0.0.1}
+      port: ${oc.env:RLINF_JAX_REF_PORT,6006}
+      expected_encoder_fingerprint: ${oc.env:RLINF_STAGE1_RLT_FINGERPRINT,null}
+    override_cfg:
+      is_dummy: false
+      four_can_mux_enabled: true
+      # 2026-10-20: the RL token cannot tell where the connector heads are
+      # misaligned (the operator's correction direction is not predictable
+      # from it), while the raw wrist cameras show it clearly. Keep the
+      # 640x480 wrist frames of every executed step for a head-pose detector;
+      # join them to replay rows via rlinf.data.rlt_image_log.match_frame.
+      # 2026-10-23: only the right wrist view is logged (the head-pose
+      # detector's camera), ~40 KB per step.
+      image_log_dir: ${runner.logger.log_path}/rlt_images
+      image_log_cameras: [cam_right_wrist]
+      # 2026-10-22: on the 11:12 run the Actor's correction at contact had
+      # the same size whatever the measured lateral offset and, in takeover
+      # episodes, pushed the heads further apart (corr(dx, effect) +0.50);
+      # z_rl gives the offset's sign but not its size (R2 0.2). The detector
+      # (toolkits/wire_head_pose, held-out lateral error median 0.8 px) runs
+      # on the right wrist frame of every decoded observation and adds
+      # obs["head_pose"] = [dx px, dy px, dangle rad, visible] to the Actor
+      # and critic state (actor.model.head_pose_dim) and to the reward
+      # shaping (algorithm.head_pose_shaping). Not a VLA input. v2 adds 303
+      # labeled Stage-2 frames (approach without the other head, occluded
+      # contact); replay must be backfilled with the same weights.
+      head_pose_weights: ${oc.env:RLT_HEAD_POSE_WEIGHTS,${oc.env:HOME}/rlt_data/wire_head_pose/head_pose_net_v2.pt}
+      head_pose_device: cuda
+      left_command_topic: /teleop/policy/joint_left
+      right_command_topic: /teleop/policy/joint_right
+      # Match the prompt used by the already-validated baseline serve command
+      # in READMECN.md. Prompt drift can materially change PI0.5 behavior.
+      task_description: "connect the light strings and the battery box to the splitter cable so the lights turn on."
+      step_frequency: 15.0
+      max_num_steps: 4000
+      # Cobot Magic URDF + Piper ROS baseline, in [left J1..J6, gripper_m,
+      # right J1..J6, gripper_m] order. Before every hardware campaign, query
+      # can_left and can_right with piper_sdk; if controller limits are narrower,
+      # replace the corresponding six values here (degrees -> radians).
+      joint_position_limits_lower: [-2.618, 0.0, -2.697, -1.832, -1.22, -3.14, 0.0, -2.618, 0.0, -2.697, -1.832, -1.22, -3.14, 0.0]
+      joint_position_limits_upper: [2.618, 3.14, 0.0, 1.832, 1.22, 3.14, 0.08, 2.618, 3.14, 0.0, 1.832, 1.22, 3.14, 0.08]
+      # Revolute joints: rad/step. Keep <= 0.05 for the first unloaded test.
+      max_joint_delta: 0.05
+      # Gripper command is metres, not normalized [0,1].
+      max_gripper_delta: 0.005
+      # Match the validated examples/piper_real execution path: policy targets
+      # remain at 15 Hz while the independent ROS publisher linearly
+      # interpolates the 12 arm joints at 200 Hz. Gripper timing remains
+      # discrete. This is intentionally not direct 15-Hz publishing.
+      command_publish_hz: 200.0
+      command_interpolation_duration_s: 0.0666666667
+      # Ray's observation serialization can hold the EnvWorker GIL for more
+      # than 100 ms. Keep both the 15-Hz target clock and 200-Hz ROS publisher
+      # in a separate process so chunk handoffs cannot pause the robot.
+      isolated_control_process: true
+      action_smoothing_alpha: 0.4
+      # B-style previous-command limits plus Actor-only acceleration tracking.
+      actor_command_profile_enabled: true
+      # Loosened after the zero-correction diagnostic: 0.004 rad/step and
+      # 0.0002 m/step made J6 and the grippers lag the JAX reference by up to
+      # 0.04 rad / 3.4 cm. Actor jitter is now removed upstream by the DCT
+      # correction projection.
+      # Arm: 0.01 rad/step (0.15 rad/s), still well below JAX's 0.4 rad/s.
+      actor_command_joint_step_rad: 0.01
+      # Gripper matches the JAX path (max_gripper_delta 0.005 m/step).
+      actor_command_gripper_step_m: 0.005
+      actor_command_joint_velocity_rad_s: 0.2
+      actor_command_gripper_velocity_m_s: 0.075
+      actor_command_joint_acceleration_rad_s2: 1.0
+      actor_command_gripper_acceleration_m_s2: 0.5
+      actor_command_response_time_s: 0.12
+      max_arm_velocity_rad_s: 0.4
+      feedback_step_clamp_enabled: false
+      interpolate_gripper: false
+      action_chunk_size: 10
+      # RLT stride-2 subsampling: decode a full observation after every second
+      # action so <x_t, a_t:t+C> rows exist at t = 2, 4, 6, 8 of each chunk.
+      rlt_subsample_stride: 2
+      # RTC performs the matching boundary blend after it time-aligns a new
+      # chunk. Do not apply a second independent blend in PiperWireEnv.
+      action_chunk_boundary_blend_steps: 0
+      # Continue the bounded VLA suffix while action requests are in flight.
+      # The mux-generation gate and executor HOLD ACK discard old RTC plans
+      # on Space/T/C/X/HOME; I resumes from fresh cameras.
+      rtc_enabled: true
+      # Bridge length = observation-to-chunk latency = Actor plan offset
+      # (rlt_actor_plan_offset). Every native-JAX plan runs plan[15:40) and
+      # the next observation follows plan[24], close to the validated
+      # examples/piper_real client (plan[16:36), one request per 20 steps).
+      # 2026-10-15: with 5 (plan[5:20)) and 10 (plan[10:30)) plain JAX crawled
+      # near alignment - the first ~15 plan steps barely move and each replan
+      # restarts from the lagging measured state (JAX B-window rows: 0.003 rad/s
+      # net motion, path/net 2.7, vs the OpenPI client's 0.022 rad/s, 1.2).
+      # 15 removed the crawl in 3/3 runs. Replay collected with another bridge
+      # length has a different latency and reference window; do not mix it.
+      rtc_max_bridge_steps: 15
+      rtc_boundary_blend_steps: 3
+      # Legacy direct-control reset settings; four-CAN H delegates to mux HOME.
+      reset_position_tolerance_rad: 0.01
+      reset_gripper_tolerance_m: 0.001
+      reset_open_gripper_position_m: 0.08
+      reset_closed_gripper_position_m: 0.0
+      reset_timeout_s: 30.0
+  eval:
+    rollout_epoch: 1
+    total_num_envs: 1
+    # Keep eval on the same terminal-before-manual-reset contract as training.
+    auto_reset: false
+    ignore_terminations: false
+    keyboard_reward_wrapper: piper_rlt
+    manual_start_gate: true
+    max_episode_steps: 4000
+    max_steps_per_rollout_epoch: 4000
+    video_cfg:
+      save_video: true
+      video_base_dir: ${runner.logger.log_path}/video/eval
+    override_cfg: ${env.train.override_cfg}
+
+rollout:
+  group_name: RolloutGroup
+  generation_backend: huggingface
+  enable_offload: false
+  pipeline_stage_num: 1
+  collect_transitions: true
+  collect_prev_infos: false
+  model:
+    model_path: null
+    precision: ${actor.model.precision}
+    action_dim: ${actor.model.action_dim}
+    num_action_chunks: ${actor.model.num_action_chunks}
+    ref_num_action_chunks: ${actor.model.ref_num_action_chunks}
+  rlt_feature_model:
+    model_type: native_jax_rlt_feature
+    precision: bf16
+    is_lora: false
+    # The robot-side native JAX server returns the reference action and the
+    # exact prefix used to build its KV cache in one request. Only this frozen
+    # Stage-1 RLT encoder is loaded on the GPU rollout node.
+    host: ${oc.env:RLINF_JAX_REF_HOST}
+    port: ${oc.env:RLINF_JAX_REF_PORT,6006}
+    rlt_token_checkpoint: ${oc.env:RLINF_STAGE1_RLT_TOKEN}
+    prefix_seq_len: 768
+    # Compress the action request's exact prefix on the robot (3 MiB -> 8 KiB).
+    require_compact_response: true
+    ref_num_action_chunks: ${actor.model.ref_num_action_chunks}
+    native_action_horizon: 50
+    rtc_enabled: ${env.train.override_cfg.rtc_enabled}
+    action_dim: ${actor.model.action_dim}
+    default_prompt: ${env.train.override_cfg.task_description}
+  # Keep the first real-robot campaign simple and deterministic. Enable only
+  # after the checkpoint, cameras and control path are proven stable.
+  enable_torch_compile: false
+  enable_cuda_graph: false
+
+actor:
+  group_name: ActorGroup
+  training_backend: fsdp
+  micro_batch_size: 256
+  global_batch_size: 256
+  seed: 1234
+  rlt_reset_actor_lr_on_resume: true
+  enable_offload: false
+  model:
+    model_type: rlt_mlp_policy
+    precision: fp32
+    add_value_head: false
+    add_q_head: true
+    # openpi-RLT heads: z -> 256 (LayerNorm), proprio -> 64 and action or
+    # reference chunk -> 256 (LayerNorm + tanh), then a LayerNorm-GELU trunk.
+    # In the plain concatenating critic the state-dependent z signal was ~24x
+    # the Actor correction in the first layer, so Q fit z alone (q_pi ==
+    # q_data). Still a full-output Gaussian actor anchored by BC.
+    q_head_type: rlt_projected
+    actor_architecture: projected
+    critic_hidden_dim: 256
+    critic_num_layers: 2
+    # Residual Actor: mean = JAX reference + delta, delta head zero-initialized.
+    # The full-output Actor's reproduction error where JAX alone was right
+    # (0.0029 rad mean, p90 0.0065) matched the operator corrections it had to
+    # learn (0.005-0.007 rad), burying them in noise.
+    actor_output: residual
+    fixed_std: 0.002
+    fixed_gripper_std: 0.002
+    fixed_std_is_normalized: true
+    # Sample during SAC training with a lower exploration scale, execute the
+    # policy mean on the real robot.
+    execute_actor_mean: true
+    actor_hidden_dim: 256
+    actor_num_layers: 2
+    is_lora: false
+    z_dim: 2048
+    proprio_dim: 14
+    # The 15-step RTC bridge runs the previous plan's suffix between the
+    # observation and the chunk (0.03-0.06 rad near alignment), so the state
+    # also carries bridge_delta = last queued bridge command - proprio, known
+    # at decision time. It joins the proprio branch, divided by the scale.
+    # Changing either value changes the replay schema and network shapes.
+    bridge_delta_dim: 14
+    bridge_delta_scale: 0.05
+    # env.train.override_cfg.head_pose_weights: [dx px, dy px, dangle rad,
+    # visible] divided by this scale (clipped to +-5) joins the same branch.
+    # A checkpoint trained without it needs
+    # toolkits/wire_head_pose/pad_stage2_checkpoint.py --extra 4 and a replay
+    # needs backfill_replay_head_pose.py before resuming.
+    head_pose_dim: 4
+    head_pose_scale: [20.0, 50.0, 0.3, 1.0]
+    action_dim: 14
+    # openpi-RLT timing: C=10 at 15 Hz. Replay collected with C=20 does not
+    # match this schema.
+    num_action_chunks: 10
+    ref_num_action_chunks: 10
+    # toolkits/realworld_check/compute_piper_rlt_delta_action_stats.py on
+    # pi05_wire_all_data, C=10 windows starting every 2 frames; full output in
+    # examples/embodiment/config/stats/piper_wire_all_data_rlt_delta_c10.json.
+    action_norm_stats:
+      q01: [-0.051495, -0.228377, -0.133604, -0.185569, -0.157921, -0.193, 0.0001, -0.182168, -0.260247, -0.189616, -0.155304, -0.188727, -0.161863, -0.0002]
+      q99: [0.046628, 0.194326, 0.154781, 0.158182, 0.152443, 0.211002, 0.062, 0.154291, 0.216654, 0.256497, 0.156542, 0.154833, 0.160956, 0.0733]
+  optim:
+    clip_grad: 10.0
+    lr: 1.0e-4
+    lr_scheduler: torch_constant
+  critic_optim:
+    clip_grad: 10.0
+    lr: 3.0e-4
+    lr_scheduler: torch_constant
+  fsdp_config:
+    strategy: fsdp
+    sharding_strategy: no_shard
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+
+reward:
+  use_reward_model: false
+critic:
+  use_critic_model: false

@@ -1,0 +1,11 @@
+# Two-follower Stage 2; launch start_inference_followers.launch rlt_stage2:=true.
+# The parent retains the same actor, critic, RTC, replay, and warmup settings.
+defaults:
+  - realworld_piper_rlt_stage2_ac_mlp
+  - _self_
+
+env:
+  train:
+    piper_mux_followers_only: true
+  eval:
+    piper_mux_followers_only: true

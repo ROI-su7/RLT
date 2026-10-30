@@ -1,0 +1,2203 @@
+diff --git a/can_config.sh b/can_config.sh
+index ae19c70..e9d9431 100755
+--- a/can_config.sh
++++ b/can_config.sh
+@@ -92,7 +92,7 @@
+ #-------------------------------------------------------------------------------------------------#
+ 
+ # 预定义的 CAN 模块数量
+-EXPECTED_CAN_COUNT=5
++EXPECTED_CAN_COUNT=4
+ 
+ # A Piper command callback emits several CAN frames as one burst.  The Linux
+ # default queue length of 10 is too small for 100-200 Hz control and, once the
+@@ -115,19 +115,40 @@ bring_up_can() {
+     return 1
+ }
+ 
++# Whether the kernel logged a gs_usb echo-id fault for this USB interface
++# after the adapter was last (re)configured. Such an adapter can keep its
++# netdev UP and pass ethtool while it no longer transmits: the arm then holds
++# its last target and ignores every command.
++gs_usb_echo_fault_since_configure() {
++    local usb_interface="$1"
++    dmesg 2>/dev/null | awk -v dev="gs_usb $usb_interface" '
++        index($0, dev) {
++            if (index($0, "Configuring for")) faulted = 0
++            else if (index($0, "Unexpected unused echo id")) faulted = 1
++        }
++        END { exit faulted ? 0 : 1 }'
++}
++
+ recover_stale_gs_usb_interfaces() {
+     local iface
+     local usb_interface
+     local stale_interfaces=()
+ 
+     # A candleLight/gs_usb echo-context failure can leave a netdev visible in
+-    # `ip link` while ethtool and RTNETLINK return ENODEV. Recover only those
+-    # stale adapters; healthy CAN devices and camera USB devices are untouched.
++    # `ip link` while ethtool and RTNETLINK return ENODEV, or keep it working
++    # for ethtool while transmission is stuck. Recover only those adapters;
++    # healthy CAN devices and camera USB devices are untouched.
+     for iface in $(ip -br link show type can | awk '{print $1}'); do
++        usb_interface=$(basename "$(readlink -f "/sys/class/net/$iface/device")")
+         if ethtool -i "$iface" >/dev/null 2>&1; then
++            if [ -z "$usb_interface" ] || \
++               ! gs_usb_echo_fault_since_configure "$usb_interface"; then
++                continue
++            fi
++            echo "检测到 gs_usb 接口 $iface ($usb_interface) 自上次配置后出现 echo id 错误（发送可能已卡死），将重新绑定驱动。"
++            stale_interfaces+=("$usb_interface")
+             continue
+         fi
+-        usb_interface=$(basename "$(readlink -f "/sys/class/net/$iface/device")")
+         if [ -z "$usb_interface" ] || \
+            [ ! -e "/sys/bus/usb/drivers/gs_usb/$usb_interface" ]; then
+             echo "错误: 接口 $iface 不可用，且无法确定对应的 gs_usb 设备。"
+@@ -169,11 +190,11 @@ if [ "$EXPECTED_CAN_COUNT" -ne 1 ]; then
+     declare -A USB_PORTS 
+    # USB_PORTS["1-13:1.0"]="can_left:1000000"
+    # USB_PORTS["1-12:1.0"]="can_right:1000000"
+-    USB_PORTS["1-4.1:1.0"]="can0:500000"
+-    USB_PORTS["1-13.1:1.0"]="can_l_leader:1000000"
+-    USB_PORTS["1-13.4:1.0"]="can_l_follower:1000000"
+-    USB_PORTS["1-13.3:1.0"]="can_r_leader:1000000"
+-    USB_PORTS["1-4.2:1.0"]="can_r_follower:1000000"
++    #USB_PORTS["1-4:1.0"]="can0:500000"
++    USB_PORTS["1-13:1.0"]="can_l_leader:1000000"
++    USB_PORTS["1-12:1.0"]="can_l_follower:1000000"
++    USB_PORTS["1-1:1.0"]="can_r_leader:1000000"
++    USB_PORTS["1-4:1.0"]="can_r_follower:1000000"
+ fi
+ 
+ # Recover stale gs_usb netdevs before counting and mapping interfaces.
+diff --git a/src/piper/launch/start_four_can_collect.launch b/src/piper/launch/start_four_can_collect.launch
+index c36f7ab..43fe86a 100644
+--- a/src/piper/launch/start_four_can_collect.launch
++++ b/src/piper/launch/start_four_can_collect.launch
+@@ -18,16 +18,25 @@
+        event-driven firmware emits its first complete MASTER target group. -->
+   <arg name="leader_startup_timeout_s" default="30.0" />
+   <arg name="collection_startup_timeout_s" default="10.0" />
++  <arg name="collection_recovery_stable_time_s" default="0.10" />
+ 
+-  <!-- Requested final collection tracking limit. At 200 Hz this permits at
+-       most 0.0125 rad per joint sample. queue_size=1 and TCP_NODELAY are used
++  <!-- Slew limits are a discontinuity guard, not a speed governor: measured
++       follower capability is ~3.0 rad/s per joint and ~0.22 m/s at the
++       gripper, so a lower value only adds lag the hardware did not ask for.
++       The tracking-lag bounds stop the limiter from integrating error while
++       an operator outruns the arm. queue_size=1 and TCP_NODELAY are used
+        throughout the data path to avoid accumulating old commands. -->
+-  <arg name="max_joint_velocity_rad_s" default="2.5" />
+-  <arg name="max_gripper_velocity_m_s" default="0.15" />
++  <arg name="max_joint_velocity_rad_s" default="3.0" />
++  <arg name="max_gripper_velocity_m_s" default="0.8" />
++  <arg name="max_joint_tracking_lag_rad" default="0.10" />
++  <arg name="max_gripper_tracking_lag_m" default="0.01" />
+ 
+   <arg name="sdk_piper_init" default="false" />
+   <arg name="enable_timeout_s" default="5.0" />
+   <arg name="enable_retry_period_s" default="0.1" />
++  <arg name="collection_enable_retry_backoff_s" default="1.0" />
++  <arg name="collection_enable_status_poll_s" default="0.10" />
++  <arg name="collection_enable_loss_grace_s" default="0.50" />
+   <arg name="follower_feedback_seed_timeout_s" default="2.0" />
+   <arg name="log_joint_commands" default="false" />
+   <arg name="log_joint_commands_period_s" default="1.0" />
+@@ -57,13 +66,19 @@
+   <!-- Followers remain standard OUTPUT arms and accept commands only from
+        piper_fixed_collect_mux. Explicit /enable_flag=true is required. -->
+   <node name="piper_collect_puppet_left_driver" pkg="piper"
+-        type="piper_start_slave_node.py" output="screen" required="true">
++        type="piper_collect_slave_node.py" output="screen" required="true">
+     <param name="can_port" value="$(arg puppet_left_can)" />
+     <param name="mode" value="1" />
+     <param name="auto_enable" value="$(arg auto_enable)" />
+     <param name="sdk_piper_init" value="$(arg sdk_piper_init)" />
+     <param name="enable_timeout_s" value="$(arg enable_timeout_s)" />
+     <param name="enable_retry_period_s" value="$(arg enable_retry_period_s)" />
++    <param name="collection_enable_retry_backoff_s"
++           value="$(arg collection_enable_retry_backoff_s)" />
++    <param name="collection_enable_status_poll_s"
++           value="$(arg collection_enable_status_poll_s)" />
++    <param name="collection_enable_loss_grace_s"
++           value="$(arg collection_enable_loss_grace_s)" />
+     <param name="feedback_seed_timeout_s"
+            value="$(arg follower_feedback_seed_timeout_s)" />
+     <param name="log_joint_commands" value="$(arg log_joint_commands)" />
+@@ -74,16 +89,25 @@
+     <remap from="/puppet/arm_status" to="/puppet/arm_status_left" />
+     <remap from="/puppet/end_pose" to="/puppet/end_pose_left" />
+     <remap from="/pos_cmd" to="/teleop/unused/pos_cmd_left" />
++    <remap from="/enable_flag" to="/teleop/follower_enable_request" />
++    <remap from="/teleop/follower_enabled"
++           to="/teleop/follower_enabled_left" />
+   </node>
+ 
+   <node name="piper_collect_puppet_right_driver" pkg="piper"
+-        type="piper_start_slave_node.py" output="screen" required="true">
++        type="piper_collect_slave_node.py" output="screen" required="true">
+     <param name="can_port" value="$(arg puppet_right_can)" />
+     <param name="mode" value="1" />
+     <param name="auto_enable" value="$(arg auto_enable)" />
+     <param name="sdk_piper_init" value="$(arg sdk_piper_init)" />
+     <param name="enable_timeout_s" value="$(arg enable_timeout_s)" />
+     <param name="enable_retry_period_s" value="$(arg enable_retry_period_s)" />
++    <param name="collection_enable_retry_backoff_s"
++           value="$(arg collection_enable_retry_backoff_s)" />
++    <param name="collection_enable_status_poll_s"
++           value="$(arg collection_enable_status_poll_s)" />
++    <param name="collection_enable_loss_grace_s"
++           value="$(arg collection_enable_loss_grace_s)" />
+     <param name="feedback_seed_timeout_s"
+            value="$(arg follower_feedback_seed_timeout_s)" />
+     <param name="log_joint_commands" value="$(arg log_joint_commands)" />
+@@ -94,6 +118,9 @@
+     <remap from="/puppet/arm_status" to="/puppet/arm_status_right" />
+     <remap from="/puppet/end_pose" to="/puppet/end_pose_right" />
+     <remap from="/pos_cmd" to="/teleop/unused/pos_cmd_right" />
++    <remap from="/enable_flag" to="/teleop/follower_enable_request" />
++    <remap from="/teleop/follower_enabled"
++           to="/teleop/follower_enabled_right" />
+   </node>
+ 
+   <node name="piper_fixed_collect_mux" pkg="piper"
+@@ -102,9 +129,15 @@
+     <param name="input_timeout_s" value="$(arg input_timeout_s)" />
+     <param name="startup_timeout_s"
+            value="$(arg collection_startup_timeout_s)" />
++    <param name="recovery_stable_time_s"
++           value="$(arg collection_recovery_stable_time_s)" />
+     <param name="max_joint_velocity_rad_s"
+            value="$(arg max_joint_velocity_rad_s)" />
+     <param name="max_gripper_velocity_m_s"
+            value="$(arg max_gripper_velocity_m_s)" />
++    <param name="max_joint_tracking_lag_rad"
++           value="$(arg max_joint_tracking_lag_rad)" />
++    <param name="max_gripper_tracking_lag_m"
++           value="$(arg max_gripper_tracking_lag_m)" />
+   </node>
+ </launch>
+diff --git a/src/piper/launch/start_four_can_mux.launch b/src/piper/launch/start_four_can_mux.launch
+index 4cb609f..39acf4f 100644
+--- a/src/piper/launch/start_four_can_mux.launch
++++ b/src/piper/launch/start_four_can_mux.launch
+@@ -106,6 +106,10 @@
+   <arg name="home_stable_samples" default="20" />
+   <arg name="home_max_joint_velocity_rad_s" default="0.25" />
+   <arg name="home_max_gripper_velocity_m_s" default="0.03" />
++  <!-- HOME release: open follower grippers to this width (m) for
++       home_release_s before moving HOME, close at HOME. 0 disables it. -->
++  <arg name="home_release_gripper_m" default="0.0" />
++  <arg name="home_release_s" default="1.5" />
+ 
+   <!-- Supervised profile: leaders use 0xFC for IDLE/INFERENCE/HOME. T changes
+        to 0xFA zero-force MASTER without disabling the leaders; the mux then
+@@ -329,6 +333,8 @@
+     <param name="inference_start_timeout_s"
+            value="$(arg inference_start_timeout_s)" />
+     <param name="home_timeout_s" value="$(arg home_timeout_s)" />
++    <param name="home_release_gripper_m" value="$(arg home_release_gripper_m)" />
++    <param name="home_release_s" value="$(arg home_release_s)" />
+     <param name="home_stable_samples" value="$(arg home_stable_samples)" />
+     <param name="home_max_joint_velocity_rad_s"
+            value="$(arg home_max_joint_velocity_rad_s)" />
+diff --git a/src/piper/launch/start_inference_followers.launch b/src/piper/launch/start_inference_followers.launch
+index db67ae5..013ce44 100644
+--- a/src/piper/launch/start_inference_followers.launch
++++ b/src/piper/launch/start_inference_followers.launch
+@@ -3,6 +3,8 @@
+   <arg name="puppet_left_can" default="can_l_follower" />
+   <arg name="puppet_right_can" default="can_r_follower" />
+   <arg name="publish_hz" default="200.0" />
++  <!-- Opt-in Stage-2 I/B/C/X keyboard protocol; ordinary OpenPI is unchanged. -->
++  <arg name="rlt_stage2" default="false" />
+   <arg name="input_timeout_s" default="0.15" />
+   <arg name="policy_input_timeout_s" default="1.0" />
+   <!-- After this interval the mux reports exactly which input streams are
+@@ -55,6 +57,7 @@
+ 
+   <node name="piper_policy_follower_mux" pkg="piper"
+         type="piper_policy_follower_mux.py" output="screen" required="true">
++    <param name="rlt_stage2" value="$(arg rlt_stage2)" />
+     <param name="publish_hz" value="$(arg publish_hz)" />
+     <param name="input_timeout_s" value="$(arg input_timeout_s)" />
+     <param name="policy_input_timeout_s" value="$(arg policy_input_timeout_s)" />
+diff --git a/src/piper/launch/start_inference_takeover.launch b/src/piper/launch/start_inference_takeover.launch
+index 786fbc7..22267a2 100644
+--- a/src/piper/launch/start_inference_takeover.launch
++++ b/src/piper/launch/start_inference_takeover.launch
+@@ -9,6 +9,10 @@
+        follower. Use the collection profile to pre-align instead. -->
+   <arg name="supervised_start_joint_tolerance_rad" default="0.08" />
+   <arg name="supervised_start_gripper_tolerance_m" default="0.015" />
++  <!-- H releases a held object: open follower grippers, return HOME open,
++       then close. Set home_release_gripper_m:=0 for the original HOME. -->
++  <arg name="home_release_gripper_m" default="0.06" />
++  <arg name="home_release_s" default="1.5" />
+ 
+   <include file="$(find piper)/launch/start_four_can_mux.launch">
+     <arg name="master_left_can" value="$(arg master_left_can)" />
+@@ -25,5 +29,7 @@
+          value="$(arg supervised_start_joint_tolerance_rad)" />
+     <arg name="supervised_start_gripper_tolerance_m"
+          value="$(arg supervised_start_gripper_tolerance_m)" />
++    <arg name="home_release_gripper_m" value="$(arg home_release_gripper_m)" />
++    <arg name="home_release_s" value="$(arg home_release_s)" />
+   </include>
+ </launch>
+diff --git a/src/piper/scripts/piper_fixed_collect_mux.py b/src/piper/scripts/piper_fixed_collect_mux.py
+index eeb8069..ff635b8 100755
+--- a/src/piper/scripts/piper_fixed_collect_mux.py
++++ b/src/piper/scripts/piper_fixed_collect_mux.py
+@@ -37,32 +37,49 @@ class FixedCollectMux:
+         self.publish_hz = float(rospy.get_param("~publish_hz", 200.0))
+         self.input_timeout = float(rospy.get_param("~input_timeout_s", 0.15))
+         self.startup_timeout = float(rospy.get_param("~startup_timeout_s", 8.0))
+-        # Final collection limit requested for lower leader-to-follower lag.
+-        # Piper's documented upper joint-speed bound is 3 rad/s.
++        self.recovery_stable_time = float(
++            rospy.get_param("~recovery_stable_time_s", 0.10)
++        )
++        # Measured follower ceiling on this cell is ~3.0 rad/s per joint and
++        # ~0.22 m/s at the gripper. A limit below that throttles the arm in
++        # software before it ever reaches its hardware limit.
+         self.max_joint_velocity = float(
+-            rospy.get_param("~max_joint_velocity_rad_s", 2.5)
++            rospy.get_param("~max_joint_velocity_rad_s", 3.0)
+         )
+         self.max_gripper_velocity = float(
+-            rospy.get_param("~max_gripper_velocity_m_s", 0.15)
++            rospy.get_param("~max_gripper_velocity_m_s", 0.8)
++        )
++        # Anti-windup bound, see _bounded().
++        self.max_joint_lag = float(
++            rospy.get_param("~max_joint_tracking_lag_rad", 0.10)
++        )
++        self.max_gripper_lag = float(
++            rospy.get_param("~max_gripper_tracking_lag_m", 0.01)
+         )
+         if min(
+             self.publish_hz,
+             self.input_timeout,
+             self.startup_timeout,
++            self.recovery_stable_time,
+             self.max_joint_velocity,
+             self.max_gripper_velocity,
++            self.max_joint_lag,
++            self.max_gripper_lag,
+         ) <= 0.0:
+             raise ValueError("fixed collection rates, timeouts and limits must be positive")
+ 
+         self._lock = threading.RLock()
+         self._leader = {"left": TimedJointState(), "right": TimedJointState()}
+         self._follower = {"left": TimedJointState(), "right": TimedJointState()}
++        self._follower_enabled = {"left": False, "right": False}
+         self._last_output = {"left": None, "right": None}
+         self._last_publish_time = time.monotonic()
+         self._operator_active = True
+         self._enable_requested = False
+         self._enable_requested_at = 0.0
+         self._collect_active = False
++        self._recovery_started_at = 0.0
++        self._hold_reason = None
+         self._emergency_stop = False
+         self._published_mode = None
+ 
+@@ -96,6 +113,9 @@ class FixedCollectMux:
+         self._takeover_pub = rospy.Publisher(
+             "/teleop/takeover_ready", Bool, queue_size=1, latch=True
+         )
++        self._follower_enable_pub = rospy.Publisher(
++            "/teleop/follower_enable_request", Bool, queue_size=1, latch=True
++        )
+         for side in ("left", "right"):
+             rospy.Subscriber(
+                 "/teleop/leader/joint_{}".format(side),
+@@ -113,6 +133,14 @@ class FixedCollectMux:
+                 queue_size=1,
+                 tcp_nodelay=True,
+             )
++            rospy.Subscriber(
++                "/teleop/follower_enabled_{}".format(side),
++                Bool,
++                self._follower_enabled_callback,
++                callback_args=side,
++                queue_size=1,
++                tcp_nodelay=True,
++            )
+         rospy.Subscriber(
+             "/teleop/emergency_stop_request",
+             Empty,
+@@ -133,12 +161,22 @@ class FixedCollectMux:
+         self._emergency_pub.publish(Bool(data=False))
+         self._inference_pub.publish(Bool(data=False))
+         self._takeover_pub.publish(Bool(data=False))
++        self._follower_enable_pub.publish(Bool(data=False))
+         rospy.loginfo("Fixed-MASTER collection mux waiting for four fresh arm streams")
+ 
+     def _joint_callback(self, message, storage):
+         with self._lock:
+             storage.update(message)
+ 
++    def _follower_enabled_callback(self, message, side):
++        with self._lock:
++            enabled = bool(message.data)
++            if enabled != self._follower_enabled[side]:
++                self._follower_enabled[side] = enabled
++                rospy.logwarn(
++                    "Fixed collection %s follower enable confirmed=%s", side, enabled
++                )
++
+     def _set_mode(self, mode):
+         if mode != self._published_mode:
+             self._published_mode = mode
+@@ -159,14 +197,20 @@ class FixedCollectMux:
+             self._enable_requested = requested
+             if not requested:
+                 self._collect_active = False
++                self._hold_reason = None
++                self._recovery_started_at = 0.0
+                 self._last_output = {"left": None, "right": None}
++                self._follower_enable_pub.publish(Bool(data=False))
+                 if self._operator_active:
+                     self._set_mode("IDLE")
+                 rospy.logwarn("Fixed collection command output disabled")
+             else:
+                 self._enable_requested_at = time.monotonic()
++                self._recovery_started_at = 0.0
++                self._follower_enable_pub.publish(Bool(data=True))
+                 rospy.logwarn(
+-                    "Fixed collection enable received; seeding commands from follower feedback"
++                    "Fixed collection enable received; waiting for both followers to "
++                    "confirm all six motor drivers"
+                 )
+ 
+     def _mode_callback(self, message):
+@@ -194,20 +238,22 @@ class FixedCollectMux:
+         self._enable_requested = False
+         self._collect_active = False
+         self._operator_active = False
++        self._follower_enable_pub.publish(Bool(data=False))
+         self._emergency_pub.publish(Bool(data=True))
+         self._set_mode("ESTOP")
+         rospy.logerr("Fixed collection stopped: %s", reason)
+ 
+     def _fresh_inputs(self, now):
+         values = {}
+-        all_fresh = True
++        stale = []
+         for group_name, group in (("leader", self._leader), ("follower", self._follower)):
+             values[group_name] = {}
+             for side in ("left", "right"):
+                 value, fresh = group[side].sample(now, self.input_timeout)
+                 values[group_name][side] = value
+-                all_fresh = all_fresh and fresh
+-        return values, all_fresh
++                if not fresh:
++                    stale.append("{}_{}".format(group_name, side))
++        return values, stale
+ 
+     @staticmethod
+     def _message(position):
+@@ -223,22 +269,52 @@ class FixedCollectMux:
+             return list(target)
+         output = []
+         for index, (previous, requested) in enumerate(zip(old, target)):
+-            velocity = self.max_gripper_velocity if index == 6 else self.max_joint_velocity
++            if index == 6:
++                velocity, max_lag = self.max_gripper_velocity, self.max_gripper_lag
++            else:
++                velocity, max_lag = self.max_joint_velocity, self.max_joint_lag
+             step = velocity * dt
+             delta = requested - previous
+-            output.append(previous + max(-step, min(step, delta)))
++            value = previous + max(-step, min(step, delta))
++            # Without this clamp the slew limit is an unbounded integrator:
++            # a leader segment faster than `velocity` accumulates error for
++            # its whole duration, so the follower is still travelling after
++            # the operator has already stopped.
++            output.append(max(requested - max_lag, min(requested + max_lag, value)))
+         return output
+ 
++    def _publish_last_output(self):
++        for side in ("left", "right"):
++            if self._last_output[side] is not None:
++                self._command_pub[side].publish(
++                    self._message(self._last_output[side])
++                )
++
++    def _enter_powered_hold(self, reason):
++        self._recovery_started_at = 0.0
++        self._publish_last_output()
++        self._set_mode("HOLD")
++        if reason != self._hold_reason:
++            self._hold_reason = reason
++            rospy.logerr(
++                "Fixed collection powered HOLD: %s; no E-STOP was sent and "
++                "followers retain their last position targets",
++                reason,
++            )
++
+     def run(self):
+         rate = rospy.Rate(self.publish_hz)
+         while not rospy.is_shutdown():
+             now = time.monotonic()
+             with self._lock:
+-                values, fresh = self._fresh_inputs(now)
++                values, stale = self._fresh_inputs(now)
++                followers_enabled = all(self._follower_enabled.values())
+                 if self._operator_active and not self._emergency_stop:
+-                    if not fresh:
++                    if stale:
+                         if self._collect_active:
+-                            self._latch_emergency("a leader/follower input became stale")
++                            self._enter_powered_hold(
++                                "stale streams={}".format(",".join(stale))
++                            )
+                         elif (
+                             self._enable_requested
+                             and now - self._enable_requested_at > self.startup_timeout
+@@ -257,6 +333,25 @@ class FixedCollectMux:
+                                 "Fixed collection waiting; followers remain command-inhibited "
+                                 "until complete MASTER/follower streams arrive",
+                             )
++                    elif not followers_enabled:
++                        missing = [
++                            side
++                            for side in ("left", "right")
++                            if not self._follower_enabled[side]
++                        ]
++                        if self._collect_active:
++                            self._enter_powered_hold(
++                                "unconfirmed follower enable={}".format(
++                                    ",".join(missing)
++                                )
++                            )
++                        elif self._enable_requested:
++                            rospy.logwarn_throttle(
++                                2.0,
++                                "Fixed collection command-inhibited; waiting for "
++                                "follower enable confirmation: %s",
++                                ",".join(missing),
++                            )
+                     else:
+                         for side in ("left", "right"):
+                             self._action_pub[side].publish(
+@@ -267,15 +362,34 @@ class FixedCollectMux:
+                                 self._collect_active = False
+                             self._set_mode("IDLE")
+                         elif not self._collect_active:
++                            if self._recovery_started_at <= 0.0:
++                                self._recovery_started_at = now
++                            if now - self._recovery_started_at < self.recovery_stable_time:
++                                rate.sleep()
++                                continue
+                             for side in ("left", "right"):
+                                 self._last_output[side] = list(values["follower"][side])
+                             self._last_publish_time = now
+                             self._collect_active = True
+                             self._set_mode("COLLECT")
+                             rospy.logwarn(
+-                                "Fixed collection active: verified MASTER inputs own both followers"
++                                "Fixed collection active: fresh MASTER/follower inputs and "
++                                "both follower enables are confirmed"
+                             )
+                         if self._collect_active:
++                            if self._hold_reason is not None:
++                                if self._recovery_started_at <= 0.0:
++                                    self._recovery_started_at = now
++                                if now - self._recovery_started_at < self.recovery_stable_time:
++                                    self._publish_last_output()
++                                    rate.sleep()
++                                    continue
++                                rospy.logwarn(
++                                    "Fixed collection recovered from powered HOLD: %s",
++                                    self._hold_reason,
++                                )
++                                self._hold_reason = None
++                            self._set_mode("COLLECT")
+                             dt = min(
+                                 0.05,
+                                 max(1.0 / self.publish_hz, now - self._last_publish_time),
+diff --git a/src/piper/scripts/piper_fixed_master_reader.py b/src/piper/scripts/piper_fixed_master_reader.py
+index ff0a0e7..dd0e31d 100755
+--- a/src/piper/scripts/piper_fixed_master_reader.py
++++ b/src/piper/scripts/piper_fixed_master_reader.py
+@@ -36,8 +36,26 @@ class FixedMasterReader:
+         self.publish_hz = float(rospy.get_param("~publish_hz", 200.0))
+         self.startup_timeout = float(rospy.get_param("~startup_timeout_s", 5.0))
+         self.stream_timeout = float(rospy.get_param("~stream_timeout_s", 0.15))
+-        if self.publish_hz <= 0.0 or self.startup_timeout <= 0.0 or self.stream_timeout <= 0.0:
+-            raise ValueError("reader rates and timeouts must be positive")
++        # Bound on how long a silent bus is held at the last pose before the
++        # link is declared dead.  Disabled by default (0.0) and it must stay
++        # that way for normal collection: measured on this hardware, a
++        # stationary leader emits nothing at all -- not even a heartbeat --
++        # so an idle leader and an unplugged one are indistinguishable from
++        # the bus alone, and any finite bound turns every operator pause into
++        # a spurious command-withholding fault.  Set it only while actively
++        # diagnosing a leader that is known to be moving.
++        self.hold_timeout = float(rospy.get_param("~hold_timeout_s", 0.0))
++        if (
++            self.publish_hz <= 0.0
++            or self.startup_timeout <= 0.0
++            or self.stream_timeout <= 0.0
++            or self.hold_timeout < 0.0
++            or (0.0 < self.hold_timeout <= self.stream_timeout)
++        ):
++            raise ValueError(
++                "reader rates and timeouts must be positive and a non-zero "
++                "hold_timeout_s must exceed stream_timeout_s"
++            )
+ 
+         self._joint_pub = rospy.Publisher(
+             "/master/joint_states", JointState, queue_size=1, tcp_nodelay=True
+@@ -53,6 +71,7 @@ class FixedMasterReader:
+         self._active_offset = None
+         self._last_pose = None
+         self._last_frame_at = 0.0
++        self._last_any_frame_at = 0.0
+         self._opened_at = time.monotonic()
+         self._running = True
+ 
+@@ -96,7 +115,14 @@ class FixedMasterReader:
+             if len(frame) != CAN_FRAME_SIZE:
+                 continue
+             can_id, dlc, data = struct.unpack(CAN_FRAME_FORMAT, frame)
+-            self._process_frame(can_id & CAN_ID_MASK, bytes(data[:dlc]), time.monotonic())
++            now = time.monotonic()
++            # Liveness is tracked over every arbitration ID, not just the
++            # control group: a stationary leader legitimately stops emitting
++            # 0x15x targets while its other periodic frames keep coming, so
++            # only a fully silent bus means the link itself is gone.
++            with self._lock:
++                self._last_any_frame_at = now
++            self._process_frame(can_id & CAN_ID_MASK, bytes(data[:dlc]), now)
+ 
+     def _process_frame(self, can_id, data, timestamp):
+         for offset in CONTROL_OFFSETS:
+@@ -194,12 +220,32 @@ class FixedMasterReader:
+         rate = rospy.Rate(self.publish_hz)
+         while not rospy.is_shutdown():
+             now = time.monotonic()
+-            if self._sample(now, require_fresh=False):
++            with self._lock:
++                last_any = self._last_any_frame_at
++            hold_age = (
++                now - self._last_frame_at if self._last_frame_at > 0.0 else 0.0
++            )
++            bus_age = now - last_any if last_any > 0.0 else 0.0
++            if self.hold_timeout > 0.0 and bus_age > self.hold_timeout:
++                # Only reachable when the operator opted in, because a
++                # stationary leader is silent on this hardware.  Holding the
++                # last pose indefinitely is the correct default: it keeps a
++                # paused operator working, at the cost of not being able to
++                # tell a paused leader from an unplugged one.
++                self._set_state("STALE")
++                rospy.logerr_throttle(
++                    1.0,
++                    "%s CAN bus fully silent for %.1fs (limit %.1fs); leader "
++                    "command withheld -- check the leader's power and CAN "
++                    "wiring, the USB adapter is still present (%s)",
++                    self.can_port,
++                    bus_age,
++                    self.hold_timeout,
++                    self._rate_text(),
++                )
++            elif self._sample(now, require_fresh=False):
+                 self._set_state(
+-                    "MASTER_HOLD"
+-                    if self._last_frame_at > 0.0
+-                    and now - self._last_frame_at > self.stream_timeout
+-                    else "MASTER"
++                    "MASTER_HOLD" if hold_age > self.stream_timeout else "MASTER"
+                 )
+                 self._joint_pub.publish(self._message())
+                 gripper_id = self._gripper_id(self._active_offset)
+diff --git a/src/piper/scripts/piper_four_state_mux.py b/src/piper/scripts/piper_four_state_mux.py
+index 839dc72..d10b08a 100755
+--- a/src/piper/scripts/piper_four_state_mux.py
++++ b/src/piper/scripts/piper_four_state_mux.py
+@@ -156,6 +156,14 @@ class FourStateMux:
+         self.home_max_gripper_velocity = float(
+             rospy.get_param("~home_max_gripper_velocity_m_s", 0.03)
+         )
++        # Optional HOME release: open both follower grippers in place for
++        # home_release_s so a held object is let go, keep them open while the
++        # arms move HOME, then close to the captured HOME gripper value.
++        # home_release_gripper_m = 0 keeps the original HOME behaviour.
++        self.home_release_gripper = float(
++            rospy.get_param("~home_release_gripper_m", 0.0)
++        )
++        self.home_release_duration = float(rospy.get_param("~home_release_s", 1.5))
+         # Supervised inference must not use motor torque to correct a large
+         # launch-time leader/follower mismatch.  Large deltas previously made
+         # a loaded leader J5 enter overcurrent/stall protection before policy
+@@ -188,6 +196,8 @@ class FourStateMux:
+             or self.home_stable_samples <= 0
+             or self.home_max_joint_velocity <= 0.0
+             or self.home_max_gripper_velocity <= 0.0
++            or self.home_release_gripper < 0.0
++            or self.home_release_duration < 0.0
+             or self.supervised_start_joint_tolerance <= 0.0
+             or self.supervised_start_gripper_tolerance <= 0.0
+         ):
+@@ -239,6 +249,8 @@ class FourStateMux:
+         self._hold_active = False
+         self._home_active = False
+         self._home_phase = "IDLE"
++        self._home_release_until = 0.0
++        self._home_gripper_open = False
+         self._home_started_at = 0.0
+         self._home_stable_count = 0
+         self._home_follower_target = {"left": None, "right": None}
+@@ -349,6 +361,13 @@ class FourStateMux:
+         self._hold_subscriber = rospy.Subscriber(
+             "/teleop/hold_request", Empty, self._hold_callback, queue_size=1
+         )
++        # Published by a Piper driver whose CAN adapter stopped transmitting.
++        self._can_tx_stalled_subscriber = rospy.Subscriber(
++            "/teleop/can_tx_stalled",
++            String,
++            self._can_tx_stalled_callback,
++            queue_size=10,
++        )
+         self._policy_hold_ack_subscriber = rospy.Subscriber(
+             "/teleop/policy_hold_ack",
+             Bool,
+@@ -464,6 +483,30 @@ class FourStateMux:
+                 previous,
+             )
+ 
++    def _can_tx_stalled_callback(self, message):
++        """Stop every arm when one arm's CAN adapter no longer transmits.
++
++        That arm silently holds its last target, so continuing would move the
++        other arms alone (e.g. pull the cable) and HOME would never finish.
++        """
++        port = message.data.strip()
++        if not port:
++            return
++        now = time.monotonic()
++        reason = (
++            "{0} stopped transmitting CAN frames; that arm only holds its last "
++            "target. Keep the launch running, run `sudo ip link set {0} down "
++            "&& sudo ip link set {0} up` (the drivers reopen the port), then "
++            "resume with I or H".format(port)
++        )
++        with self._lock:
++            if self._home_active:
++                self._finish_home(False, "HOME aborted: " + reason)
++            elif self._mode in ("IDLE", "HOLD"):
++                rospy.logerr("%s", reason)
++            else:
++                self._fail_closed(reason, now)
++
+     def _hold_callback(self, _message):
+         now = time.monotonic()
+         with self._lock:
+@@ -537,10 +580,13 @@ class FourStateMux:
+             self._home_phase = "SWITCHING"
+             self._home_started_at = now
+             self._home_stable_count = 0
++            self._home_gripper_open = False
++            # Announce HOME before IDLE: a leader driver that sees IDLE without
++            # home_active disables its motors, and Piper has no brakes.
++            self._home_active_pub.publish(Bool(data=True))
+             self._mode_pub.publish(String(data=self._mode))
+             self._set_leader_tx_enabled(True)
+             self._hold_active_pub.publish(Bool(data=False))
+-            self._home_active_pub.publish(Bool(data=True))
+             rospy.logwarn("HOME requested: %s -> IDLE; preparing all four arms", previous)
+ 
+     def _mode_callback(self, message):
+@@ -810,7 +856,15 @@ class FourStateMux:
+     def _target_for_side(self, side, now):
+         storage = self._left if side == "left" else self._right
+         if self._mode in ("IDLE", "HOLD"):
++            if self._home_active and self._home_phase == "RELEASING":
++                return self._with_gripper(
++                    self._hold_target[side], self.home_release_gripper
++                )
+             if self._home_active and self._home_phase == "MOVING":
++                if self._home_gripper_open:
++                    return self._with_gripper(
++                        self._home_follower_target[side], self.home_release_gripper
++                    )
+                 return self._home_follower_target[side]
+             if self._hold_target[side] is None:
+                 self._hold_target[side] = self._current_anchor(side, now)
+@@ -958,12 +1012,29 @@ class FourStateMux:
+         self._home_leader_target["right"] = right_leader
+         rospy.loginfo("Captured startup poses for HOME")
+ 
++    @staticmethod
++    def _with_gripper(position, gripper):
++        """Copy a 7-D joint target with a different gripper opening."""
++        if position is None:
++            return None
++        return list(position[:6]) + [gripper]
++
+     def _finish_home(self, success, message):
++        release_pending = self._home_active and self.home_release_gripper > 0.0
+         self._home_active = False
+         self._home_phase = "IDLE"
++        self._home_gripper_open = False
+         self._home_stable_count = 0
+         self._hold_target["left"] = self._current_anchor("left", time.monotonic())
+         self._hold_target["right"] = self._current_anchor("right", time.monotonic())
++        if release_pending:
++            # Even when HOME times out, never leave released grippers open.
++            for side in ("left", "right"):
++                home = self._home_follower_target[side]
++                if self._hold_target[side] is not None and home is not None:
++                    self._hold_target[side] = self._with_gripper(
++                        self._hold_target[side], home[6]
++                    )
+         # HOME completion is a powered position hold, not IDLE. Piper has no
+         # joint brakes, so disabling here would undo the safety guarantee.
+         if not self._emergency_stop_active:
+@@ -980,15 +1051,34 @@ class FourStateMux:
+     def _process_home(self, now):
+         if not self._home_active:
+             return
+-        if now - self._home_started_at > self.home_timeout:
++        releasing = self.home_release_gripper > 0.0
++        timeout = self.home_timeout + (self.home_release_duration if releasing else 0.0)
++        if now - self._home_started_at > timeout:
+             self._finish_home(False, "HOME timed out; holding the current pose")
+             return
+         if self._home_phase == "SWITCHING":
+             if all(state == "OUTPUT" for state in self._leader_state.values()):
++                if releasing:
++                    self._home_phase = "RELEASING"
++                    self._home_release_until = now + self.home_release_duration
++                    self._home_gripper_open = True
++                    rospy.logwarn(
++                        "All leader arms are OUTPUT; opening follower grippers to "
++                        "%.3f m for %.1fs before moving HOME",
++                        self.home_release_gripper,
++                        self.home_release_duration,
++                    )
++                else:
++                    self._home_phase = "MOVING"
++                    rospy.logwarn("All leader arms are OUTPUT; moving four arms HOME")
++            return
++        if self._home_phase == "RELEASING":
++            if now >= self._home_release_until:
+                 self._home_phase = "MOVING"
+-                rospy.logwarn("All leader arms are OUTPUT; moving four arms HOME")
++                rospy.logwarn("Grippers released; moving four arms HOME (grippers open)")
+             return
+         aligned = True
++        followers_home = True
+         for side, storage in (("left", self._left), ("right", self._right)):
+             follower, follower_fresh = storage["follower"].sample(
+                 now, self.input_timeout
+@@ -996,15 +1086,33 @@ class FourStateMux:
+             leader, leader_fresh = storage["leader"].sample(now, self.input_timeout)
+             if not follower_fresh or not leader_fresh:
+                 aligned = False
++                followers_home = False
+                 continue
++            follower_target = self._home_follower_target[side]
++            if (
++                max(abs(a - b) for a, b in zip(follower[:6], follower_target[:6]))
++                > self.takeover_joint_tolerance
++            ):
++                followers_home = False
++            if self._home_gripper_open:
++                follower_target = self._with_gripper(
++                    follower_target, self.home_release_gripper
++                )
+             for actual, target in (
+-                (follower, self._home_follower_target[side]),
++                (follower, follower_target),
+                 (leader, self._home_leader_target[side]),
+             ):
+                 if max(abs(a - b) for a, b in zip(actual[:6], target[:6])) > self.takeover_joint_tolerance:
+                     aligned = False
+                 if abs(actual[6] - target[6]) > self.takeover_gripper_tolerance:
+                     aligned = False
++        if self._home_gripper_open and followers_home:
++            # Follower joints are HOME with open fingers; close to the HOME
++            # value. Leader alignment is not required for this step.
++            self._home_gripper_open = False
++            self._home_stable_count = 0
++            rospy.logwarn("Follower arms at HOME; closing follower grippers")
++            return
+         self._home_stable_count = self._home_stable_count + 1 if aligned else 0
+         if self._home_stable_count >= self.home_stable_samples:
+             self._finish_home(True, "")
+diff --git a/src/piper/scripts/piper_leader_mode_driver.py b/src/piper/scripts/piper_leader_mode_driver.py
+index 3aa8548..df87165 100755
+--- a/src/piper/scripts/piper_leader_mode_driver.py
++++ b/src/piper/scripts/piper_leader_mode_driver.py
+@@ -8,6 +8,7 @@ ROS.  Returning to inference writes 0xFC and repeats the measured current pose
+ to cover the documented v1.8-5--v1.8-8 Leader->Follower firmware workaround.
+ """
+ 
++import errno
+ import math
+ import socket
+ import struct
+@@ -16,6 +17,7 @@ import time
+ from collections import deque
+ 
+ import rospy
++from piper_can_tx_guard import CanLinkWatch, CanTxGuard, reset_command
+ from piper_sdk import C_PiperInterface_V2
+ from sensor_msgs.msg import JointState
+ from std_msgs.msg import Bool, String
+@@ -74,26 +76,7 @@ class RawMasterObserver:
+         self._restore_master_slave_tx = deque(maxlen=32)
+         self._status_segments = deque(maxlen=64)
+         self._can_error_frames = deque(maxlen=32)
+-        self._socket = socket.socket(socket.PF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+-        self._socket.settimeout(0.1)
+-        # Receive SocketCAN error frames during the role hand-off.  A 0x470
+-        # frame observed by this second socket is the kernel/driver TX echo of
+-        # the SDK socket's write; combining that echo with the absence of CAN
+-        # errors and the subsequent 0x2A1 sequence separates a host/adapter TX
+-        # problem from a controller that did not apply 0xFA.
+-        try:
+-            self._socket.setsockopt(
+-                getattr(socket, "SOL_CAN_RAW", 101),
+-                getattr(socket, "CAN_RAW_ERR_FILTER", CAN_RAW_ERR_FILTER),
+-                struct.pack("=I", CAN_ERR_MASK),
+-            )
+-        except OSError as exc:
+-            rospy.logwarn(
+-                "%s could not enable raw CAN error-frame capture: %s",
+-                self.can_port,
+-                exc,
+-            )
+-        self._socket.bind((can_port,))
++        self._socket = self._open_socket()
+         self._thread = threading.Thread(
+             target=self._read_loop,
+             name="dynamic-master-observer-{}".format(can_port),
+@@ -142,6 +125,29 @@ class RawMasterObserver:
+         with self._lock:
+             self._capture_enabled = False
+ 
++    def _open_socket(self):
++        sock = socket.socket(socket.PF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
++        sock.settimeout(0.1)
++        # Receive SocketCAN error frames during the role hand-off.  A 0x470
++        # frame observed by this second socket is the kernel/driver TX echo of
++        # the SDK socket's write; combining that echo with the absence of CAN
++        # errors and the subsequent 0x2A1 sequence separates a host/adapter TX
++        # problem from a controller that did not apply 0xFA.
++        try:
++            sock.setsockopt(
++                getattr(socket, "SOL_CAN_RAW", 101),
++                getattr(socket, "CAN_RAW_ERR_FILTER", CAN_RAW_ERR_FILTER),
++                struct.pack("=I", CAN_ERR_MASK),
++            )
++        except OSError as exc:
++            rospy.logwarn(
++                "%s could not enable raw CAN error-frame capture: %s",
++                self.can_port,
++                exc,
++            )
++        sock.bind((self.can_port,))
++        return sock
++
+     def _read_loop(self):
+         while self._running and not rospy.is_shutdown():
+             try:
+@@ -149,11 +155,21 @@ class RawMasterObserver:
+             except socket.timeout:
+                 continue
+             except OSError as exc:
+-                if self._running:
+-                    rospy.logerr(
+-                        "%s raw MASTER receive failed: %s", self.can_port, exc
++                if not self._running:
++                    return
++                # A down/up (CAN TX stall reset) reports ENETDOWN once and the
++                # socket keeps receiving afterwards. Any other error means the
++                # netdev was replaced (can_config.sh rebind): bind anew.
++                if exc.errno != errno.ENETDOWN:
++                    rospy.logwarn_throttle(
++                        5.0,
++                        "%s raw MASTER receive failed: %s; reopening",
++                        self.can_port,
++                        exc,
+                     )
+-                return
++                    time.sleep(0.5)
++                    self._reopen_socket()
++                continue
+             if len(frame) != CAN_FRAME_SIZE:
+                 continue
+             can_id, dlc, data = struct.unpack(CAN_FRAME_FORMAT, frame)
+@@ -408,6 +424,17 @@ class RawMasterObserver:
+                 ", ".join(error_parts) if error_parts else "none",
+             )
+ 
++    def _reopen_socket(self):
++        try:
++            sock = self._open_socket()
++        except OSError:
++            return  # The netdev is not back yet; retry on the next error.
++        old, self._socket = self._socket, sock
++        try:
++            old.close()
++        except OSError:
++            pass
++
+     def close(self):
+         self._running = False
+         try:
+@@ -507,6 +534,22 @@ class PiperLeaderModeDriver:
+             rospy.get_param("~home_max_gripper_velocity_m_s", 0.03)
+         )
+         self.enable_timeout = float(rospy.get_param("~enable_timeout_s", 5.0))
++        # HOME publishes /teleop/mode=IDLE and /teleop/home_active=True on two
++        # topics. When IDLE arrived first, the IDLE branch disabled a powered
++        # leader before home_active was seen; Piper has no brakes, so the arm
++        # fell and HOME then re-enabled it at the fallen pose. Keep a powered
++        # leader enabled for this grace period before an IDLE disable.
++        self.idle_disable_grace = float(
++            rospy.get_param("~idle_disable_grace_s", 1.0)
++        )
++        # MOVE J mode (MotionCtrl_2) is a mode switch, not a per-target frame.
++        # Resending it with every 200 Hz target added a fifth frame per command
++        # on a bus that already carries ~3150 Piper feedback frames/s. 0 keeps
++        # the legacy every-command behavior.
++        self.motion_ctrl_period = float(
++            rospy.get_param("~motion_ctrl_period_s", 0.1)
++        )
++        self._last_motion_ctrl = 0.0
+         self.enable_retry_period = float(
+             rospy.get_param("~enable_retry_period_s", 0.1)
+         )
+@@ -560,6 +603,7 @@ class PiperLeaderModeDriver:
+         # role-switch frame in SocketCAN.
+         self._tx_lock = threading.Lock()
+         self._desired_mode = "IDLE"
++        self._idle_since = time.monotonic()
+         self._role = "UNKNOWN"
+         self._state = "STARTING"
+         self._enable_requested = bool(rospy.get_param("~auto_enable", False))
+@@ -632,6 +676,17 @@ class PiperLeaderModeDriver:
+         rospy.loginfo("Leader mode driver opening %s", self.can_port)
+         self.piper = C_PiperInterface_V2(can_name=self.can_port)
+         self.piper.ConnectPort(piper_init=False)
++        # A gs_usb adapter can stop transmitting while staying UP; see
++        # piper_can_tx_guard. The mux enters HOLD on the report, and a
++        # down/up of the interface recovers it without a relaunch.
++        self._tx_guard = CanTxGuard(
++            self.can_port,
++            stall_timeout=float(rospy.get_param("~tx_stall_timeout_s", 0.5)),
++        )
++        self._link_watch = CanLinkWatch(self.can_port)
++        self._tx_stall_pub = rospy.Publisher(
++            "/teleop/can_tx_stalled", String, queue_size=10
++        )
+         self._raw_master_observer = RawMasterObserver(self.can_port)
+         self._detect_initial_role()
+         # The default gate is closed. Publish a deterministic initial ACK even
+@@ -651,6 +706,8 @@ class PiperLeaderModeDriver:
+             with self._lock:
+                 if mode != self._desired_mode:
+                     self._failed_role_request = None
++                    if mode == "IDLE":
++                        self._idle_since = time.monotonic()
+                 self._desired_mode = mode
+ 
+     def _enable_callback(self, message):
+@@ -776,6 +833,8 @@ class PiperLeaderModeDriver:
+         )
+         self._command_velocity = [0.0] * 7
+         self._last_command_time = time.monotonic()
++        # The first command after any reset re-asserts MOVE J mode.
++        self._last_motion_ctrl = 0.0
+ 
+     def _enable_and_wait(self, position_gripper=True):
+         if not self._safety_ok(force=True):
+@@ -1956,9 +2015,39 @@ class PiperLeaderModeDriver:
+         self._command_output = bounded
+         joints = [int(round(value * RAD_TO_MILLI_DEG)) for value in bounded[:6]]
+         gripper = int(round(max(0.0, min(0.08, bounded[6])) * 1000000.0))
+-        self.piper.MotionCtrl_2(0x01, 0x01, self.move_speed_percent)
++        now = time.monotonic()
++        if now - self._last_motion_ctrl >= self.motion_ctrl_period:
++            self.piper.MotionCtrl_2(0x01, 0x01, self.move_speed_percent)
++            self._last_motion_ctrl = now
+         self.piper.JointCtrl(*joints)
+         self.piper.GripperCtrl(gripper, 1000, 0x01, 0)
++        self._tx_guard.note_command_sent()
++
++    def _check_can(self):
++        """Report a stalled adapter; reopen the SDK port after its reset."""
++        event = self._tx_guard.poll()
++        if event == "stalled":
++            rospy.logerr(
++                "%s CAN TX STALLED: leader commands are sent but the adapter "
++                "has transmitted nothing for %.1fs (tx_packets=%s; dmesg: "
++                "gs_usb 'echo id'). Keep this launch running and reset the "
++                "adapter: `%s`",
++                self.can_port,
++                self._tx_guard.stalled_for(),
++                self._tx_guard.last_value,
++                reset_command(self.can_port),
++            )
++            self._tx_stall_pub.publish(String(data=self.can_port))
++        elif event == "resumed":
++            rospy.logwarn("%s CAN transmission resumed", self.can_port)
++        if not self._link_watch.poll():
++            return
++        # piper_sdk's read thread exits on the ENETDOWN of a down/up.
++        with self._tx_lock:
++            self.piper.DisconnectPort()
++            self.piper.ConnectPort(can_init=True, piper_init=False)
++            self._reset_command_trajectory()
++        rospy.logwarn("%s CAN link was reset; SDK port reopened", self.can_port)
+ 
+     @staticmethod
+     def _message(position):
+@@ -1993,6 +2082,17 @@ class PiperLeaderModeDriver:
+                 emergency_stop_requested = self._emergency_stop_requested
+                 command = None if self._command is None else list(self._command)
+                 failed_role_request = self._failed_role_request
++                idle_since = self._idle_since
++
++            # A powered leader stays enabled briefly after IDLE so that a HOME
++            # request whose home_active message lags the IDLE mode message
++            # cannot drop the arm (see idle_disable_grace).
++            idle_grace_pending = (
++                desired_mode == "IDLE"
++                and not home_active
++                and self._output_enable_verified
++                and time.monotonic() - idle_since < self.idle_disable_grace
++            )
+ 
+             # The inference client publishes one global enable flag for all
+             # four arms. Do not let that flag turn a disabled leader on merely
+@@ -2034,6 +2134,9 @@ class PiperLeaderModeDriver:
+                 except Exception as exc:
+                     rospy.logerr("%s emergency stop recovery failed: %s", self.can_port, exc)
+                     self._set_state("ERROR")
++            elif idle_grace_pending:
++                # Keep holding the last powered target; re-evaluated each loop.
++                pass
+             elif desired_mode == "IDLE" and not home_active:
+                 # IDLE always converges to 0xFC standby with motors disabled.
+                 # Role recovery must happen before the enable gate; otherwise
+@@ -2178,6 +2281,7 @@ class PiperLeaderModeDriver:
+                     )
+                     self._set_state("ERROR")
+ 
++            self._check_can()
+             pose = self._read_pose()
+             if pose is not None:
+                 self._feedback_pub.publish(self._message(pose))
+diff --git a/src/piper/scripts/piper_policy_follower_mux.py b/src/piper/scripts/piper_policy_follower_mux.py
+index 315ca26..8d8b2dc 100755
+--- a/src/piper/scripts/piper_policy_follower_mux.py
++++ b/src/piper/scripts/piper_policy_follower_mux.py
+@@ -40,6 +40,7 @@ class TimedJointState:
+ 
+ class PolicyFollowerMux:
+     def __init__(self):
++        self.rlt_stage2 = bool(rospy.get_param("~rlt_stage2", False))
+         self.publish_hz = float(rospy.get_param("~publish_hz", 200.0))
+         self.input_timeout = float(rospy.get_param("~input_timeout_s", 0.15))
+         self.policy_timeout = float(
+@@ -94,7 +95,7 @@ class PolicyFollowerMux:
+         self._active = False
+         self._operator_active = True
+         self._emergency_stop = False
+-        self._hold_active = False
++        self._hold_active = self.rlt_stage2
+         # HOLD -> I is a two-phase handshake.  The ROS controller keeps the
+         # measured pose while the OpenPI client discards its old action chunk;
+         # policy commands received before the I request are never replayed.
+@@ -191,7 +192,7 @@ class PolicyFollowerMux:
+         self._inference_pub.publish(Bool(data=False))
+         self._emergency_pub.publish(Bool(data=False))
+         self._takeover_pub.publish(Bool(data=False))
+-        self._hold_pub.publish(Bool(data=False))
++        self._hold_pub.publish(Bool(data=self._hold_active))
+         self._home_pub.publish(Bool(data=False))
+         self._follower_enable_pub.publish(Bool(data=False))
+         rospy.loginfo(
+@@ -199,6 +200,8 @@ class PolicyFollowerMux:
+         )
+ 
+     def _set_mode(self, mode):
++        if self.rlt_stage2 and mode in ("INFERENCE_FOLLOWERS", "WAITING_POLICY_RESYNC"):
++            mode = "INFERENCE"
+         if mode != self._published_mode:
+             self._published_mode = mode
+             self._mode_pub.publish(String(data=mode))
+@@ -226,7 +229,12 @@ class PolicyFollowerMux:
+             self._last_output = {"left": None, "right": None}
+             if requested:
+                 self._enable_requested_at = time.monotonic()
+-                self._set_mode("WAITING_POLICY")
++                if self.rlt_stage2:
++                    self._hold_active = True
++                    self._hold_pub.publish(Bool(data=True))
++                    self._set_mode("HOLD")
++                else:
++                    self._set_mode("WAITING_POLICY")
+                 rospy.logwarn(
+                     "Follower inference armed; waiting for two policies and two feedback streams"
+                 )
+@@ -247,7 +255,12 @@ class PolicyFollowerMux:
+             elif requested == "INFERENCE":
+                 if self._emergency_stop:
+                     rospy.logerr("Cannot resume INFERENCE: hardware E-STOP is latched")
+-                elif not self._enable_requested or not self._active:
++                elif self.rlt_stage2 and self._active and any(
++                    not self._follower[side].sample(time.monotonic(), self.input_timeout)[1]
++                    for side in ("left", "right")
++                ):
++                    self._feedback_timeout_hold("I rejected: follower feedback is stale")
++                elif not self._enable_requested or (not self._active and not self.rlt_stage2):
+                     rospy.logerr("Cannot resume INFERENCE before followers are active")
+                 else:
+                     # Release the OpenPI pause gate, but continue publishing
+@@ -315,6 +328,24 @@ class PolicyFollowerMux:
+         with self._lock:
+             self._latch_emergency("operator QUICK EMERGENCY STOP")
+ 
++    def _feedback_timeout_hold(self, reason):
++        """Stage 2 freezes targets without removing support torque on RX gaps."""
++        if not self.rlt_stage2:
++            self._latch_emergency(reason)
++            return
++        now = time.monotonic()
++        ages = ", ".join(
++            "{}={:.3f}s".format(side, now - self._follower[side].received_at)
++            for side in ("left", "right")
++        )
++        if not self._hold_active or self._resume_pending or self._home_active:
++            self._enter_hold(reason)
++        rospy.logerr_throttle(
++            1.0, "%s; feedback age [%s], limit=%.3fs; powered HOLD retained. "
++            "Restore feedback, then press I; no automatic resume.",
++            reason, ages, self.input_timeout,
++        )
++
+     def _latch_emergency(self, reason):
+         if self._emergency_stop:
+             return
+@@ -402,7 +433,10 @@ class PolicyFollowerMux:
+                     values, freshness = self._samples(now)
+                     missing = self._missing_streams(freshness)
+                     if not self._active:
+-                        if not missing:
++                        if self.rlt_stage2 and not self._resume_pending:
++                            # No policy motion or motor enable before I.
++                            pass
++                        elif not missing:
+                             for side in ("left", "right"):
+                                 self._last_output[side] = list(
+                                     values["follower"][side]
+@@ -417,6 +451,7 @@ class PolicyFollowerMux:
+                             self._last_publish_time = now
+                             self._active = True
+                             self._hold_active = False
++                            self._hold_pub.publish(Bool(data=False))
+                             self._resume_pending = False
+                             activate_followers = True
+                             self._set_mode("INFERENCE_FOLLOWERS")
+@@ -434,7 +469,7 @@ class PolicyFollowerMux:
+                     elif not self._hold_active and not self._resume_pending and any(
+                         not freshness["follower"][side] for side in ("left", "right")
+                     ):
+-                        self._latch_emergency("follower feedback became stale")
++                        self._feedback_timeout_hold("follower feedback became stale")
+                     elif not self._hold_active and not self._resume_pending and any(
+                         not freshness["policy"][side] for side in ("left", "right")
+                     ):
+@@ -447,7 +482,7 @@ class PolicyFollowerMux:
+                             not freshness["follower"][side] for side in ("left", "right")
+                         )
+                         if follower_missing:
+-                            self._latch_emergency(
++                            self._feedback_timeout_hold(
+                                 "follower feedback became stale while waiting for policy resync"
+                             )
+                         else:
+@@ -472,8 +507,10 @@ class PolicyFollowerMux:
+                             not freshness["follower"][side] for side in ("left", "right")
+                         )
+                         if follower_missing:
+-                            self._latch_emergency("follower feedback became stale during HOLD")
+-                        else:
++                            self._feedback_timeout_hold("follower feedback became stale during HOLD")
++                        if not self._emergency_stop:
++                            # Keep sending the frozen last valid targets even
++                            # during an RX gap. Never advance HOME or policy.
+                             dt = min(
+                                 0.05,
+                                 max(1.0 / self.publish_hz, now - self._last_publish_time),
+diff --git a/src/piper/scripts/piper_start_slave_node.py b/src/piper/scripts/piper_start_slave_node.py
+index 9c36dab..15d974f 100755
+--- a/src/piper/scripts/piper_start_slave_node.py
++++ b/src/piper/scripts/piper_start_slave_node.py
+@@ -7,12 +7,13 @@
+ import rospy
+ import rosnode
+ from sensor_msgs.msg import JointState
+-from std_msgs.msg import Bool
++from std_msgs.msg import Bool, String
+ import time
+ import threading
+ import math
+ from piper_sdk import *
+ from piper_sdk import C_PiperInterface
++from piper_can_tx_guard import CanLinkWatch, CanTxGuard, reset_command
+ from piper_msgs.msg import PiperStatusMsg, PosCmd
+ from geometry_msgs.msg import PoseStamped
+ from tf.transformations import quaternion_from_euler  # 用于欧拉角到四元数的转换
+@@ -78,10 +79,16 @@ class C_PiperRosNode():
+         self.feedback_seed_timeout = float(
+             rospy.get_param('~feedback_seed_timeout_s', 2.0)
+         )
++        # The enable watchdog reads a cached SDK frame.  Anything older than
++        # this is reported as lost confirmation rather than trusted.
++        self.feedback_stale_timeout = float(
++            rospy.get_param('~feedback_stale_s', 0.5)
++        )
+         if (
+             self.enable_timeout <= 0.0
+             or self.enable_retry_period <= 0.0
+             or self.feedback_seed_timeout <= 0.0
++            or self.feedback_stale_timeout <= 0.0
+         ):
+             raise ValueError("enable and feedback timeouts must be positive")
+         rospy.loginfo(
+@@ -106,6 +113,21 @@ class C_PiperRosNode():
+         self.joint_state_slave.velocity = [0.0] * 7
+         self.joint_state_slave.effort = [0.0] * 7
+ 
++        # gs_usb/candleLight adapters can stop transmitting while the netdev
++        # stays UP (kernel: "Unexpected unused echo id"). The arm then holds
++        # its last target and silently ignores every command. The guard
++        # notices commands being sent while tx_packets is frozen and the mux
++        # enters HOLD; a down/up of the interface (no relaunch) recovers it.
++        self.tx_stall_timeout = float(rospy.get_param('~tx_stall_timeout_s', 0.5))
++        # MOVE J mode (MotionCtrl_2) only needs re-asserting, not one frame per
++        # target: it was the fifth frame of every command. 0 = every command.
++        self.motion_ctrl_period = float(rospy.get_param('~motion_ctrl_period_s', 0.1))
++        self._last_motion_ctrl = 0.0
++        self._tx_guard = CanTxGuard(self.can_port, stall_timeout=self.tx_stall_timeout)
++        self._link_watch = CanLinkWatch(self.can_port)
++        self.tx_stall_pub = rospy.Publisher(
++            '/teleop/can_tx_stalled', String, queue_size=10
++        )
+         self.piper = C_PiperInterface(can_name=self.can_port)
+         self.piper.ConnectPort(piper_init=self.sdk_piper_init)
+         # 模式为1的时候，订阅控制消息
+@@ -139,17 +161,94 @@ class C_PiperRosNode():
+             except Exception as exc:
+                 rospy.logwarn("Piper CAN close during shutdown failed: %s", exc)
+ 
+-    def _driver_enable_states(self):
+-        low_speed = self.piper.GetArmLowSpdInfoMsgs()
++    # foc_status bit meanings, in the SDK's own bit order.  Only
++    # driver_enable_status was ever consulted, so a firmware-side protection
++    # trip used to disable an arm without leaving any trace in the logs.
++    FOC_FAULT_FIELDS = (
++        ("voltage_too_low", "欠压"),
++        ("motor_overheating", "电机过温"),
++        ("driver_overcurrent", "驱动过流"),
++        ("driver_overheating", "驱动过温"),
++        ("collision_status", "碰撞保护"),
++        ("driver_error_status", "驱动错误"),
++        ("stall_status", "堵转保护"),
++    )
++
++    def _low_speed_motors(self, low_speed):
+         return [
+-            bool(low_speed.motor_1.foc_status.driver_enable_status),
+-            bool(low_speed.motor_2.foc_status.driver_enable_status),
+-            bool(low_speed.motor_3.foc_status.driver_enable_status),
+-            bool(low_speed.motor_4.foc_status.driver_enable_status),
+-            bool(low_speed.motor_5.foc_status.driver_enable_status),
+-            bool(low_speed.motor_6.foc_status.driver_enable_status),
++            getattr(low_speed, "motor_{}".format(index)) for index in range(1, 7)
+         ]
+ 
++    def _driver_enable_states(self, low_speed=None):
++        if low_speed is None:
++            low_speed = self.piper.GetArmLowSpdInfoMsgs()
++        return [
++            bool(motor.foc_status.driver_enable_status)
++            for motor in self._low_speed_motors(low_speed)
++        ]
++
++    def _feedback_age(self, low_speed):
++        """Seconds since the last low-speed frame, or None if never seen.
++
++        GetArmLowSpdInfoMsgs returns the SDK's cached frame with no freshness
++        guarantee.  When CAN RX stops, the cache keeps reporting the last
++        known-good state forever, so a stale read must never be mistaken for
++        a healthy arm.
++        """
++        stamp = float(low_speed.time_stamp)
++        if stamp <= 0.0:
++            return None
++        return max(0.0, time.time() - stamp)
++
++    def _driver_faults(self, low_speed):
++        """Latched protection bits per motor, as ['J5 驱动过流', ...]."""
++        faults = []
++        for index, motor in enumerate(self._low_speed_motors(low_speed), start=1):
++            for field, label in self.FOC_FAULT_FIELDS:
++                if bool(getattr(motor.foc_status, field, False)):
++                    faults.append("J{} {}".format(index, label))
++        return faults
++
++    def _driver_telemetry(self, low_speed):
++        return " ".join(
++            "J{}:{:.1f}V/{}°C/{}°C/{:.2f}A".format(
++                index,
++                motor.vol / 10.0,
++                motor.foc_temp,
++                motor.motor_temp,
++                motor.bus_current / 1000.0,
++            )
++            for index, motor in enumerate(self._low_speed_motors(low_speed), start=1)
++        )
++
++    def _supervised_enable_states(self):
++        """Enable states for the watchdog, with staleness and fault reporting.
++
++        Raises when the feedback is too old to trust so the caller treats it
++        as lost confirmation instead of silently reusing the cached frame.
++        """
++        low_speed = self.piper.GetArmLowSpdInfoMsgs()
++        age = self._feedback_age(low_speed)
++        if age is None:
++            raise RuntimeError("no low-speed feedback received yet")
++        if age > self.feedback_stale_timeout:
++            raise RuntimeError(
++                "low-speed feedback is {:.2f}s old (limit {:.2f}s); "
++                "CAN feedback from {} has stopped".format(
++                    age, self.feedback_stale_timeout, self.can_port
++                )
++            )
++        faults = self._driver_faults(low_speed)
++        if faults:
++            rospy.logerr_throttle(
++                1.0,
++                "%s driver protection tripped: %s | %s",
++                self.can_port,
++                ", ".join(faults),
++                self._driver_telemetry(low_speed),
++            )
++        return self._driver_enable_states(low_speed)
++
+     def _wait_for_seed_feedback(self):
+         deadline = time.monotonic() + self.feedback_seed_timeout
+         joint_message = self.piper.GetArmJointMsgs()
+@@ -292,9 +391,46 @@ class C_PiperRosNode():
+             self.PublishSlaveArmJointAndGripper()
+             self.PublishSlaveArmState()
+             self.PublishSlaveArmEndPose()
++            self._check_can_link()
++            self._check_tx_stall()
+ 
+             rate.sleep()
+-    
++
++    def _check_tx_stall(self):
++        """Report once when commands are sent but the CAN adapter sends none."""
++        event = self._tx_guard.poll()
++        if event == "resumed":
++            rospy.logwarn(
++                "%s CAN transmission resumed; press I to leave HOLD", self.can_port
++            )
++        elif event == "stalled":
++            rospy.logerr(
++                "%s CAN TX STALLED: joint commands are sent but the adapter has "
++                "transmitted nothing for %.1fs (tx_packets=%s); this arm only "
++                "holds its last target (dmesg: gs_usb 'echo id'). Keep this "
++                "launch running and reset the adapter: `%s`",
++                self.can_port,
++                self._tx_guard.stalled_for(),
++                self._tx_guard.last_value,
++                reset_command(self.can_port),
++            )
++            self.tx_stall_pub.publish(String(data=self.can_port))
++
++    def _check_can_link(self):
++        """Reopen the SDK port after the interface was reset or re-created.
++
++        piper_sdk's read thread exits on the ENETDOWN of a down/up, so
++        feedback would stay frozen without a fresh socket.
++        """
++        if not self._link_watch.poll():
++            return
++        with self._command_lock:
++            self.piper.DisconnectPort()
++            self.piper.ConnectPort(can_init=True, piper_init=False)
++            # The next command re-asserts MOVE J mode.
++            self._last_motion_ctrl = 0.0
++        rospy.logwarn("%s CAN link was reset; SDK port reopened", self.can_port)
++
+     def PublishSlaveArmState(self):
+         arm_status = PiperStatusMsg()
+         arm_status.ctrl_mode = self.piper.GetArmStatus().arm_status.ctrl_mode
+@@ -479,10 +615,14 @@ class C_PiperRosNode():
+                     or self._emergency_stop_active
+                 ):
+                     return
+-                self.piper.MotionCtrl_2(0x01, 0x01, 100)
++                now = time.monotonic()
++                if now - self._last_motion_ctrl >= self.motion_ctrl_period:
++                    self.piper.MotionCtrl_2(0x01, 0x01, 100)
++                    self._last_motion_ctrl = now
+                 self.piper.JointCtrl(joint_0, joint_1, joint_2,
+                                      joint_3, joint_4, joint_5)
+                 self.piper.GripperCtrl(abs(joint_6), 1000, 0x01, 0)
++                self._tx_guard.note_command_sent()
+     
+     def enable_callback(self, enable_flag:Bool):
+         """机械臂使能回调函数
+@@ -492,6 +632,8 @@ class C_PiperRosNode():
+         """
+         rospy.loginfo_throttle(2.0, "Received enable flag: %s", enable_flag.data)
+         self._enable_requested = bool(enable_flag.data)
++        # Re-assert MOVE J mode with the first command after any enable change.
++        self._last_motion_ctrl = 0.0
+         if(enable_flag.data):
+             if self._emergency_stop_active:
+                 rospy.logwarn(
+diff --git a/src/piper/test/test_four_can_profiles.py b/src/piper/test/test_four_can_profiles.py
+index 079bc18..1d54c17 100644
+--- a/src/piper/test/test_four_can_profiles.py
++++ b/src/piper/test/test_four_can_profiles.py
+@@ -58,7 +58,7 @@ class FourCanProfileTest(unittest.TestCase):
+             node_types,
+             {
+                 "piper_fixed_master_reader.py",
+-                "piper_start_slave_node.py",
++                "piper_collect_slave_node.py",
+                 "piper_fixed_collect_mux.py",
+             },
+         )
+@@ -71,9 +71,26 @@ class FourCanProfileTest(unittest.TestCase):
+         self.assertNotIn("EnableArm", reader_text)
+         self.assertNotIn("MotionCtrl", reader_text)
+ 
+-    def test_collection_joint_velocity_defaults_to_two_point_five(self):
++    def test_collection_slew_limits_do_not_undercut_the_follower(self):
++        # Measured follower capability is ~3.0 rad/s per joint and ~0.22 m/s
++        # at the gripper; a lower limit adds lag the hardware did not ask for.
+         root = _launch("start_four_can_collect.launch")
+-        self.assertEqual(_arg_value(root, "max_joint_velocity_rad_s"), "2.5")
++        self.assertGreaterEqual(
++            float(_arg_value(root, "max_joint_velocity_rad_s")), 3.0
++        )
++        self.assertGreaterEqual(
++            float(_arg_value(root, "max_gripper_velocity_m_s")), 0.22
++        )
++
++    def test_collection_slew_limiter_is_anti_windup(self):
++        root = _launch("start_four_can_collect.launch")
++        for name in ("max_joint_tracking_lag_rad", "max_gripper_tracking_lag_m"):
++            self.assertGreater(float(_arg_value(root, name)), 0.0)
++        text = (PACKAGE / "scripts" / "piper_fixed_collect_mux.py").read_text(
++            encoding="utf-8"
++        )
++        self.assertIn("max_joint_tracking_lag_rad", text)
++        self.assertIn("max_gripper_tracking_lag_m", text)
+ 
+     def test_master_preflight_is_receive_only(self):
+         text = (PACKAGE / "scripts" / "piper_verify_fixed_master.py").read_text(
+@@ -247,6 +264,52 @@ class FourCanProfileTest(unittest.TestCase):
+             text,
+         )
+ 
++    def test_collection_waits_for_verified_follower_enable(self):
++        root = _launch("start_four_can_collect.launch")
++        follower_nodes = [
++            node
++            for node in root.findall(".//node")
++            if node.get("type") == "piper_collect_slave_node.py"
++        ]
++        self.assertEqual(len(follower_nodes), 2)
++        for side, node in zip(("left", "right"), follower_nodes):
++            remaps = {
++                remap.get("from"): remap.get("to")
++                for remap in node.findall("remap")
++            }
++            self.assertEqual(
++                remaps.get("/enable_flag"), "/teleop/follower_enable_request"
++            )
++            self.assertEqual(
++                remaps.get("/teleop/follower_enabled"),
++                "/teleop/follower_enabled_{}".format(side),
++            )
++
++        mux_text = (
++            PACKAGE / "scripts" / "piper_fixed_collect_mux.py"
++        ).read_text(encoding="utf-8")
++        self.assertIn('"/teleop/follower_enable_request"', mux_text)
++        self.assertIn('"/teleop/follower_enabled_{}"', mux_text)
++        self.assertIn("followers_enabled = all", mux_text)
++
++    def test_collection_stale_input_enters_powered_hold_not_estop(self):
++        text = (PACKAGE / "scripts" / "piper_fixed_collect_mux.py").read_text(
++            encoding="utf-8"
++        )
++        self.assertIn("_enter_powered_hold", text)
++        self.assertIn("no E-STOP was sent", text)
++        self.assertNotIn(
++            'self._latch_emergency("a leader/follower input became stale")', text
++        )
++
++    def test_collection_driver_retries_without_changing_shared_driver(self):
++        text = (PACKAGE / "scripts" / "piper_collect_slave_node.py").read_text(
++            encoding="utf-8"
++        )
++        self.assertIn("class CollectPiperRosNode(C_PiperRosNode)", text)
++        self.assertIn("collection enable is still unconfirmed", text)
++        self.assertIn("lost physical enable confirmation", text)
++
+     def test_inference_keyboard_pause_is_powered_hold(self):
+         keyboard_text = (
+             PACKAGE / "scripts" / "piper_mode_keyboard.py"
+diff --git a/src/piper/test/test_leader_role_transition.py b/src/piper/test/test_leader_role_transition.py
+index 0c18857..f1141c1 100644
+--- a/src/piper/test/test_leader_role_transition.py
++++ b/src/piper/test/test_leader_role_transition.py
+@@ -9,11 +9,14 @@ import importlib.util
+ import math
+ import pathlib
+ import struct
++import sys
+ import threading
+ import unittest
+ 
+ 
+ SCRIPT = pathlib.Path(__file__).parents[1] / "scripts" / "piper_leader_mode_driver.py"
++# rosrun puts scripts/ on sys.path for the driver's sibling imports.
++sys.path.insert(0, str(SCRIPT.parent))
+ SPEC = importlib.util.spec_from_file_location("piper_leader_mode_driver", SCRIPT)
+ MODULE = importlib.util.module_from_spec(SPEC)
+ SPEC.loader.exec_module(MODULE)
+diff --git a/src/piper/scripts/piper_can_tx_guard.py b/src/piper/scripts/piper_can_tx_guard.py
+new file mode 100644
+index 0000000..3603f0c
+--- /dev/null
++++ b/src/piper/scripts/piper_can_tx_guard.py
+@@ -0,0 +1,124 @@
++#!/usr/bin/env python3
++"""Notice a Piper CAN adapter that stopped transmitting, and its reset.
++
++The candleLight adapters (gs_usb, kernel 5.15) sometimes return the echo of a
++transmitted frame with its first bytes missing (dmesg: "Unexpected out of
++range echo id 0x01550000" is the echo of command frame 0x155 shifted by two
++bytes; "Unexpected unused echo id" is its aftermath). Every lost echo leaks
++one of gs_usb's 10 TX slots. Once all of them leak the netdev stays UP but
++transmits nothing: the arm holds its last target and piper_sdk reports
++SEND_MESSAGE_FAILED (100017) as soon as the 1000-frame qdisc is full.
++
++Closing the netdev frees every TX slot and drops the queued (stale)
++commands, while bitrate, restart-ms and txqueuelen survive, so
++``sudo ip link set <port> down && sudo ip link set <port> up`` recovers the
++adapter. piper_sdk's read thread exits on the ENETDOWN that causes (and a
++``can_config.sh`` rebind replaces the netdev), so the drivers reopen their
++SDK port when ``CanLinkWatch`` sees the link come back.
++"""
++
++import time
++
++
++def reset_command(can_port):
++    return "sudo ip link set {0} down && sudo ip link set {0} up".format(can_port)
++
++
++def _read_sysfs(path):
++    try:
++        with open(path) as stream:
++            return stream.read().strip()
++    except OSError:
++        return None  # The netdev itself vanished (USB disconnect, rebind).
++
++
++class CanTxGuard:
++    """Report commands being sent while tx_packets stays frozen.
++
++    ``poll`` returns ``"stalled"`` once when the counter stayed frozen for
++    ``stall_timeout`` while commands were sent, ``"resumed"`` when frames
++    flow again, and ``None`` otherwise.
++    """
++
++    CHECK_PERIOD = 0.1
++    # A command older than this means nothing is being commanded (disabled,
++    # HOLD without commands), so a frozen counter is expected.
++    COMMAND_ACTIVE = 0.2
++
++    def __init__(self, can_port, stall_timeout=0.5, clock=time.monotonic):
++        self.can_port = can_port
++        self.stall_timeout = stall_timeout
++        self._clock = clock
++        self._counter_path = "/sys/class/net/%s/statistics/tx_packets" % can_port
++        self._last_command_sent = 0.0
++        self._last_value = None
++        self._last_change = clock()
++        self._next_check = 0.0
++        self.stalled = False
++        self.last_value = None
++
++    def note_command_sent(self):
++        self._last_command_sent = self._clock()
++
++    def stalled_for(self):
++        return self._clock() - self._last_change
++
++    def poll(self):
++        now = self._clock()
++        if now < self._next_check:
++            return None
++        self._next_check = now + self.CHECK_PERIOD
++        raw = _read_sysfs(self._counter_path)
++        value = int(raw) if raw is not None and raw.isdigit() else None
++        self.last_value = value
++        if value is not None and value != self._last_value:
++            self._last_value = value
++            self._last_change = now
++            if self.stalled:
++                self.stalled = False
++                return "resumed"
++            return None
++        if now - self._last_command_sent > self.COMMAND_ACTIVE:
++            self._last_change = now
++            return None
++        if self.stalled or now - self._last_change < self.stall_timeout:
++            return None
++        self.stalled = True
++        return "stalled"
++
++
++class CanLinkWatch:
++    """Say once when the netdev is UP again after a down/up or re-creation.
++
++    ``ip link set down/up`` bumps ``carrier_changes``; a ``can_config.sh``
++    rebind gives the same name a new ``ifindex``. Either one leaves
++    piper_sdk without a working read thread.
++    """
++
++    CHECK_PERIOD = 0.1
++
++    def __init__(self, can_port, clock=time.monotonic):
++        self.can_port = can_port
++        self._clock = clock
++        self._base = "/sys/class/net/%s/" % can_port
++        self._next_check = 0.0
++        self._generation = self._read_generation()
++
++    def _read_generation(self):
++        if _read_sysfs(self._base + "operstate") != "up":
++            return None
++        return (
++            _read_sysfs(self._base + "ifindex"),
++            _read_sysfs(self._base + "carrier_changes"),
++        )
++
++    def poll(self):
++        now = self._clock()
++        if now < self._next_check:
++            return False
++        self._next_check = now + self.CHECK_PERIOD
++        generation = self._read_generation()
++        if generation is None or generation == self._generation:
++            return False
++        self._generation = generation
++        return True
+diff --git a/src/piper/scripts/piper_collect_slave_node.py b/src/piper/scripts/piper_collect_slave_node.py
+new file mode 100755
+index 0000000..1f95239
+--- /dev/null
++++ b/src/piper/scripts/piper_collect_slave_node.py
+@@ -0,0 +1,161 @@
++#!/usr/bin/env python3
++"""Collection-only follower driver with verified enable recovery.
++
++The generic follower driver is shared by the legacy master/slave and inference
++profiles.  Keep those paths unchanged and add collection-specific supervision
++here instead.
++"""
++
++import threading
++import time
++
++import rospy
++from std_msgs.msg import Bool
++
++from piper_start_slave_node import C_PiperRosNode
++
++
++class CollectPiperRosNode(C_PiperRosNode):
++    """Report physical enable confirmation and retry while collection requests it."""
++
++    def __init__(self):
++        # C_PiperRosNode starts its subscriber threads during construction.  Hold
++        # the enable subscriber until the collection-only status publisher and
++        # retry state below are ready, including when its input topic is latched.
++        self._collection_ready = threading.Event()
++        self._follower_enabled_pub = None
++        self._collection_enable_attempting = False
++        self._next_enable_retry_at = float("inf")
++        self._enable_loss_started_at = 0.0
++        super().__init__()
++
++        self.enable_retry_backoff = float(
++            rospy.get_param("~collection_enable_retry_backoff_s", 1.0)
++        )
++        self.enable_status_poll_period = float(
++            rospy.get_param("~collection_enable_status_poll_s", 0.10)
++        )
++        self.enable_loss_grace = float(
++            rospy.get_param("~collection_enable_loss_grace_s", 0.50)
++        )
++        if min(
++            self.enable_retry_backoff,
++            self.enable_status_poll_period,
++            self.enable_loss_grace,
++        ) <= 0.0:
++            raise ValueError("collection enable supervision intervals must be positive")
++
++        self._follower_enabled_pub = rospy.Publisher(
++            "/teleop/follower_enabled", Bool, queue_size=1, latch=True
++        )
++        self._publish_enabled(False)
++        self._collection_ready.set()
++        self._enable_watchdog = threading.Thread(
++            target=self._enable_watchdog_loop,
++            name="collection-enable-{}".format(self.can_port),
++            daemon=True,
++        )
++        self._enable_watchdog.start()
++
++    def SubEnableThread(self):
++        self._collection_ready.wait()
++        super().SubEnableThread()
++
++    def _publish_enabled(self, enabled):
++        if self._follower_enabled_pub is not None:
++            self._follower_enabled_pub.publish(Bool(data=bool(enabled)))
++
++    def _enable_and_wait(self):
++        # Close the externally visible gate before seeding/re-enabling.  The mux
++        # will hold both followers at their last commanded poses until this arm
++        # has positively confirmed all six motor drivers again.
++        if self._collection_enable_attempting:
++            return False
++        self._collection_enable_attempting = True
++        try:
++            self._publish_enabled(False)
++            enabled = super()._enable_and_wait()
++            self._publish_enabled(enabled)
++            self._enable_loss_started_at = 0.0
++            self._next_enable_retry_at = time.monotonic() + self.enable_retry_backoff
++            return enabled
++        finally:
++            self._collection_enable_attempting = False
++
++    def _disable_and_wait(self):
++        self._publish_enabled(False)
++        return super()._disable_and_wait()
++
++    def enable_callback(self, enable_flag):
++        if bool(enable_flag.data):
++            self._next_enable_retry_at = time.monotonic() + self.enable_retry_backoff
++        else:
++            self._next_enable_retry_at = float("inf")
++            self._enable_loss_started_at = 0.0
++        super().enable_callback(enable_flag)
++        self._publish_enabled(self.GetEnableFlag())
++
++    def emergency_stop_callback(self, stop_flag):
++        if bool(stop_flag.data):
++            self._publish_enabled(False)
++        super().emergency_stop_callback(stop_flag)
++        self._publish_enabled(self.GetEnableFlag())
++
++    def _enable_watchdog_loop(self):
++        while not rospy.is_shutdown() and not self._shutting_down:
++            now = time.monotonic()
++            requested = self._enable_requested and not self._emergency_stop_active
++            if not requested:
++                self._enable_loss_started_at = 0.0
++                time.sleep(self.enable_status_poll_period)
++                continue
++
++            try:
++                states = self._supervised_enable_states()
++            except Exception as exc:
++                # Stale or unreadable feedback means the arm's real state is
++                # unknown.  Report it loudly and drop the externally visible
++                # confirmation so the mux stops issuing commands, rather than
++                # letting a frozen cache pass for a healthy arm.
++                rospy.logerr_throttle(
++                    1.0,
++                    "%s collection enable-status read failed: %s",
++                    self.can_port,
++                    exc,
++                )
++                self._publish_enabled(False)
++                time.sleep(self.enable_status_poll_period)
++                continue
++
++            if self.GetEnableFlag():
++                if all(states):
++                    self._enable_loss_started_at = 0.0
++                elif self._enable_loss_started_at <= 0.0:
++                    self._enable_loss_started_at = now
++                elif now - self._enable_loss_started_at >= self.enable_loss_grace:
++                    rospy.logerr(
++                        "%s lost physical enable confirmation; states=%s; "
++                        "holding collection and re-enabling from measured pose",
++                        self.can_port,
++                        states,
++                    )
++                    self._enable_and_wait()
++            elif (
++                not self._collection_enable_attempting
++                and now >= self._next_enable_retry_at
++            ):
++                rospy.logwarn(
++                    "%s collection enable is still unconfirmed; retrying safely",
++                    self.can_port,
++                )
++                self._enable_and_wait()
++
++            time.sleep(self.enable_status_poll_period)
++
++
++if __name__ == "__main__":
++    try:
++        piper = CollectPiperRosNode()
++        piper.Pubilsh()
++    except rospy.ROSInterruptException:
++        pass
+diff --git a/src/piper/test/test_can_tx_guard.py b/src/piper/test/test_can_tx_guard.py
+new file mode 100644
+index 0000000..cf3f7df
+--- /dev/null
++++ b/src/piper/test/test_can_tx_guard.py
+@@ -0,0 +1,154 @@
++#!/usr/bin/env python3
++"""Offline tests for CAN TX stall detection and link-reset detection.
++
++A fake sysfs directory stands in for /sys/class/net/<port>; no CAN socket is
++opened.
++"""
++
++import pathlib
++import sys
++import tempfile
++import unittest
++
++SCRIPTS = pathlib.Path(__file__).parents[1] / "scripts"
++sys.path.insert(0, str(SCRIPTS))
++
++import piper_can_tx_guard as guard_module  # noqa: E402
++
++
++class _Clock:
++    def __init__(self):
++        self.now = 100.0
++
++    def __call__(self):
++        return self.now
++
++
++class _FakeNet:
++    """A writable stand-in for /sys/class/net/<port>/."""
++
++    def __init__(self, root, port="can_l_follower"):
++        self.dir = pathlib.Path(root) / port
++        (self.dir / "statistics").mkdir(parents=True)
++        self.set(tx_packets=0, operstate="up", ifindex=16, carrier_changes=1)
++
++    def set(self, **values):
++        for name, value in values.items():
++            path = (
++                self.dir / "statistics" / name
++                if name == "tx_packets"
++                else self.dir / name
++            )
++            path.write_text("%s\n" % value)
++
++    def remove(self):
++        for path in sorted(self.dir.rglob("*"), reverse=True):
++            path.rmdir() if path.is_dir() else path.unlink()
++        self.dir.rmdir()
++
++
++class _Fixture(unittest.TestCase):
++    def setUp(self):
++        self._tmp = tempfile.TemporaryDirectory()
++        self.net = _FakeNet(self._tmp.name)
++        self.clock = _Clock()
++        prefix = self._tmp.name + "/"
++        self._original_read = guard_module._read_sysfs
++        guard_module._read_sysfs = lambda path: self._original_read(
++            path.replace("/sys/class/net/", prefix)
++        )
++
++    def tearDown(self):
++        guard_module._read_sysfs = self._original_read
++        self._tmp.cleanup()
++
++    def step(self, seconds, poll):
++        events = []
++        end = self.clock.now + seconds
++        while self.clock.now < end:
++            self.clock.now += 0.05
++            events.append(poll())
++        return [event for event in events if event]
++
++
++class CanTxGuardTest(_Fixture):
++    def setUp(self):
++        super().setUp()
++        self.guard = guard_module.CanTxGuard(
++            "can_l_follower", stall_timeout=0.5, clock=self.clock
++        )
++
++    def command_for(self, seconds, tx_flows):
++        events = []
++        end = self.clock.now + seconds
++        tx = 0
++        while self.clock.now < end:
++            self.clock.now += 0.01
++            self.guard.note_command_sent()
++            if tx_flows:
++                tx += 4
++                self.net.set(tx_packets=tx)
++            event = self.guard.poll()
++            if event:
++                events.append(event)
++        return events
++
++    def test_flowing_frames_are_not_a_stall(self):
++        self.assertEqual(self.command_for(3.0, tx_flows=True), [])
++
++    def test_frozen_counter_while_commanding_is_reported_once(self):
++        self.command_for(0.2, tx_flows=True)
++        self.assertEqual(self.command_for(3.0, tx_flows=False), ["stalled"])
++        self.assertTrue(self.guard.stalled)
++
++    def test_frames_flowing_again_report_resumed(self):
++        self.command_for(1.0, tx_flows=False)
++        self.net.set(tx_packets=999)
++        self.assertEqual(self.command_for(0.2, tx_flows=False), ["resumed"])
++        self.assertFalse(self.guard.stalled)
++
++    def test_frozen_counter_without_commands_is_expected(self):
++        self.assertEqual(self.step(3.0, self.guard.poll), [])
++
++    def test_vanished_netdev_while_commanding_is_a_stall(self):
++        self.net.remove()
++        self.assertEqual(self.command_for(1.0, tx_flows=False), ["stalled"])
++
++
++class CanLinkWatchTest(_Fixture):
++    def setUp(self):
++        super().setUp()
++        self.watch = guard_module.CanLinkWatch("can_l_follower", clock=self.clock)
++
++    def test_steady_link_needs_no_reopen(self):
++        self.assertEqual(self.step(1.0, self.watch.poll), [])
++
++    def test_down_up_reports_once_when_back_up(self):
++        self.net.set(operstate="down", carrier_changes=2)
++        self.assertEqual(self.step(0.5, self.watch.poll), [])
++        self.net.set(operstate="up", carrier_changes=3)
++        self.assertEqual(self.step(0.5, self.watch.poll), [True])
++
++    def test_down_up_between_polls_is_still_seen(self):
++        self.net.set(carrier_changes=3)
++        self.assertEqual(self.step(0.5, self.watch.poll), [True])
++
++    def test_rebind_with_new_ifindex_reports_once(self):
++        self.net.remove()
++        self.assertEqual(self.step(0.5, self.watch.poll), [])
++        self.net = _FakeNet(self._tmp.name)
++        self.net.set(ifindex=21)
++        self.assertEqual(self.step(0.5, self.watch.poll), [True])
++
++
++class ResetCommandTest(unittest.TestCase):
++    def test_reset_is_down_then_up_of_the_same_port(self):
++        self.assertEqual(
++            guard_module.reset_command("can_r_leader"),
++            "sudo ip link set can_r_leader down && "
++            "sudo ip link set can_r_leader up",
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/src/piper/test/test_rlt_follower_mux.py b/src/piper/test/test_rlt_follower_mux.py
+new file mode 100644
+index 0000000..bd7b9b2
+--- /dev/null
++++ b/src/piper/test/test_rlt_follower_mux.py
+@@ -0,0 +1,149 @@
++"""Exercise actual follower mux state/commands without ROS or CAN."""
++
++import ast
++from pathlib import Path
++import math
++import threading
++from types import SimpleNamespace
++import unittest
++from unittest.mock import Mock
++
++
++class FollowerMuxTests(unittest.TestCase):
++    def mux(self, stage2=True):
++        clock = [1.0]
++        stop = [False]
++        pubs = {}
++        def publisher(topic, *args, **kwargs):
++            pubs[topic] = Mock()
++            return pubs[topic]
++        def message(**kwargs):
++            return SimpleNamespace(header=SimpleNamespace(stamp=None), **kwargs)
++        rospy = SimpleNamespace(
++            get_param=lambda key, default: stage2 if key == '~rlt_stage2' else default,
++            Publisher=publisher, Subscriber=Mock(), logwarn=Mock(), logerr=Mock(),
++            loginfo=Mock(), logwarn_throttle=Mock(), logerr_throttle=Mock(),
++            Time=SimpleNamespace(now=lambda: clock[0]),
++            is_shutdown=lambda: stop[0],
++            Rate=lambda hz: SimpleNamespace(sleep=lambda: stop.__setitem__(0, True)),
++        )
++        source = Path(__file__).parents[1] / 'scripts' / 'piper_policy_follower_mux.py'
++        nodes = [n for n in ast.parse(source.read_text()).body if isinstance(n, ast.ClassDef)]
++        env = dict(rospy=rospy, math=math, threading=threading,
++                   time=SimpleNamespace(monotonic=lambda: clock[0]),
++                   Bool=message, Empty=message, String=message, JointState=message)
++        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
++        obj = env['PolicyFollowerMux']()
++        for side in ('left', 'right'):
++            obj._follower[side].update(message(position=[.1]*7))
++            obj._policy[side].update(message(position=[.2]*7))
++        obj._enable_callback(message(data=True))
++        return obj, clock, stop, pubs, message
++
++    def test_stage2_never_enables_before_i_even_with_policy(self):
++        obj, _, _, pubs, _ = self.mux()
++        obj.run()
++        self.assertFalse(obj._active)
++        self.assertFalse(pubs['/teleop/follower_enable'].publish.call_args.args[0].data)
++        self.assertEqual(obj._home_target['left'], [.1]*7)
++
++    def test_i_releases_seed_gate_and_captures_launch_home(self):
++        obj, _, _, pubs, message = self.mux()
++        obj._mode_callback(message(data='INFERENCE'))
++        self.assertEqual(obj._published_mode, 'INFERENCE')
++        self.assertFalse(obj._hold_active)
++        obj.run()
++        self.assertTrue(obj._active)
++        self.assertEqual(obj._home_target['right'], [.1]*7)
++        self.assertEqual(pubs['/teleop/command/joint_right'].publish.call_args.args[0].position, [.1]*7)
++        self.assertTrue(pubs['/teleop/follower_enable'].publish.call_args.args[0].data)
++
++    def test_home_uses_launch_pose_after_feedback_changes(self):
++        obj, clock, stop, _, message = self.mux()
++        obj._mode_callback(message(data='INFERENCE'))
++        obj.run()
++        clock[0] += .01
++        for side in ('left', 'right'):
++            obj._follower[side].update(message(position=[.3]*7))
++        obj._hold_callback(message())
++        obj._home_callback(message())
++        self.assertTrue(obj._home_active)
++        self.assertEqual(obj._home_target['left'], [.1]*7)
++        stop[0] = False
++        obj.run()
++        self.assertTrue(all(.1 <= value < .3 for value in obj._last_output['left']))
++        self.assertTrue(obj._hold_active)
++
++    def test_resume_waits_for_new_policy_and_t_is_ignored(self):
++        obj, clock, stop, _, message = self.mux()
++        obj._mode_callback(message(data='INFERENCE'))
++        obj.run()
++        obj._hold_callback(message())
++        clock[0] += .01
++        obj._mode_callback(message(data='TAKEOVER'))
++        self.assertTrue(obj._hold_active)
++        obj._mode_callback(message(data='INFERENCE'))
++        stop[0] = False
++        obj.run()
++        self.assertTrue(obj._resume_pending)
++        clock[0] += .01
++        for side in ('left', 'right'):
++            obj._policy[side].update(message(position=[.2]*7))
++        stop[0] = False
++        obj.run()
++        self.assertFalse(obj._resume_pending)
++
++    def test_ordinary_openpi_keeps_automatic_start(self):
++        obj, _, _, _, _ = self.mux(stage2=False)
++        obj.run()
++        self.assertTrue(obj._active)
++        self.assertEqual(obj._published_mode, 'INFERENCE_FOLLOWERS')
++
++    def test_feedback_gap_holds_without_estop_or_disable_in_all_stage2_phases(self):
++        for phase in ('inference', 'resync', 'hold', 'home'):
++            with self.subTest(phase=phase):
++                obj, clock, stop, pubs, message = self.mux()
++                obj._mode_callback(message(data='INFERENCE'))
++                obj.run()
++                if phase in ('resync', 'hold', 'home'):
++                    obj._hold_callback(message())
++                if phase == 'resync':
++                    obj._mode_callback(message(data='INFERENCE'))
++                if phase == 'home':
++                    obj._home_callback(message())
++                old = list(obj._last_output['right'])
++                clock[0] += .2  # Beyond the existing 150-ms RX threshold.
++                obj._follower['left'].update(message(position=[.1]*7))
++                stop[0] = False
++                obj.run()
++                self.assertFalse(obj._emergency_stop)
++                self.assertTrue(obj._active and obj._enable_requested)
++                self.assertTrue(obj._hold_active)
++                self.assertFalse(obj._home_active or obj._resume_pending)
++                self.assertEqual(obj._last_output['right'], old)
++                self.assertTrue(pubs['/teleop/follower_enable'].publish.call_args.args[0].data)
++                self.assertFalse(pubs['/teleop/emergency_stop'].publish.call_args.args[0].data)
++                self.assertEqual(pubs['/teleop/command/joint_right'].publish.call_args.args[0].position, old)
++                obj._mode_callback(message(data='INFERENCE'))
++                self.assertTrue(obj._hold_active)  # Stale I is refused.
++                clock[0] += .01
++                for side in ('left', 'right'):
++                    obj._follower[side].update(message(position=[.1]*7))
++                stop[0] = False
++                obj.run()
++                self.assertTrue(obj._hold_active)  # Recovery is not automatic.
++                obj._mode_callback(message(data='INFERENCE'))
++                self.assertTrue(obj._resume_pending)
++
++    def test_explicit_emergency_request_still_stops_and_disables(self):
++        obj, _, _, pubs, message = self.mux()
++        obj._mode_callback(message(data='INFERENCE'))
++        obj.run()
++        obj._emergency_callback(message())
++        self.assertTrue(obj._emergency_stop)
++        self.assertFalse(pubs['/teleop/follower_enable'].publish.call_args.args[0].data)
++        self.assertTrue(pubs['/teleop/emergency_stop'].publish.call_args.args[0].data)
++
++
++if __name__ == '__main__':
++    unittest.main()

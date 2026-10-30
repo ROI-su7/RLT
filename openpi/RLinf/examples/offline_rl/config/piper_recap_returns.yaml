@@ -1,0 +1,26 @@
+defaults:
+  - recap_compute_returns
+  - _self_
+
+data:
+  dataset_type: rollout
+  train_data_paths:
+    - dataset_path: ${oc.env:RECAP_DATASET}
+      type: rollout
+  gamma: 1.0
+  # RECAP (pi*0.6 eq. 5): r_t = -1 per step, 0 at a successful end, -C_fail at
+  # a failed end, gamma = 1. C_fail must make every failed state worse than any
+  # successful one, so it exceeds the longest successful episode (demos: up to
+  # 3336 steps). The upstream default -300 only suits ~300-step tasks.
+  failure_reward: -3500.0
+  # Extension (Evo-RL, not pi*0.6): takeover cost C_int, charged on the step
+  # before each human takeover onset (needs the exported `intervention`
+  # column; sft data is unaffected). 0 restores the original RECAP reward.
+  takeover_penalty: 300.0
+  # Optional, NOT part of RECAP: extra failure cost per unfinished insertion
+  # (failure_reward - stage_failure_cost * (3 - insertions_done)). Disabled so
+  # the reward is exactly RECAP's; ~535 (= 1606 demo steps / 3) if enabled.
+  stage_total: 3
+  stage_failure_cost: 0.0
+  tag: piper_recap_v1
+  num_workers: 4

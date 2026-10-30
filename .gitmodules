@@ -1,0 +1,10 @@
+[submodule "cobot_magic/Piper_ros_private-ros-noetic"]
+	path = cobot_magic/Piper_ros_private-ros-noetic
+	url = https://github.com/ROI-su7/piper-4can-teleop-data-inference.git
+[submodule "cobot_magic/collect_data/piper_sdk_demo"]
+	path = cobot_magic/collect_data/piper_sdk_demo
+	url = https://github.com/agilexrobotics/piper_sdk_demo.git
+[submodule "cobot_magic/aloha_des/src/mobile_aloha_sim"]
+	path = cobot_magic/aloha_des/src/mobile_aloha_sim
+	url = https://github.com/agilexrobotics/mobile_aloha_sim.git
+	branch = v2.0.0

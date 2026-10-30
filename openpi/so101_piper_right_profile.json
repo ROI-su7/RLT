@@ -1,0 +1,68 @@
+{
+  "format_version": 1,
+  "side": "right",
+  "source": "so101_piper_profile_samples_v2.json",
+  "locked_piper_indices": [
+    3
+  ],
+  "mappings": [
+    {
+      "name": "j1",
+      "leader_key": "shoulder_pan",
+      "piper_index": 0,
+      "leader_reference": -1.8461538461538463,
+      "piper_reference": -0.013519100000000001,
+      "gain": -0.8248839491027119,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "leader_observed_range": [-4.659340659340643, 14.241758241758248]
+    },
+    {
+      "name": "j2",
+      "leader_key": "shoulder_lift",
+      "piper_index": 1,
+      "leader_reference": 167.42857142857142,
+      "piper_reference": -0.039301332,
+      "gain": 0.9510063885252689,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "leader_observed_range": [167.2527472527472, 181.75824175824175]
+    },
+    {
+      "name": "j3",
+      "leader_key": "elbow_flex",
+      "piper_index": 2,
+      "leader_reference": -263.032967032967,
+      "piper_reference": 0.036545180000000003,
+      "gain": 0.8845692424217295,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "leader_observed_range": [-281.5824175824176, -262.7692307692308]
+    },
+    {
+      "name": "j5",
+      "leader_key": "wrist_flex",
+      "piper_index": 4,
+      "leader_reference": 52.395604395604394,
+      "piper_reference": 0.336390096,
+      "gain": 0.7070863222720192,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "leader_observed_range": [-9.142857142857139, 76.04395604395603]
+    },
+    {
+      "name": "j6",
+      "leader_key": "wrist_roll",
+      "piper_index": 5,
+      "leader_reference": 8.307692307692308,
+      "piper_reference": 0.049244412,
+      "gain": -1.1111111111111112,
+      "gain_unit": "piper_rad_per_so101_rad",
+      "leader_observed_range": [-26.065934065934044, 21.40659340659343]
+    },
+    {
+      "name": "gripper",
+      "leader_key": "gripper",
+      "piper_index": 6,
+      "method": "endpoint_linear_clamped",
+      "leader_range": [0.3421727972626176, 99.40119760479041],
+      "piper_range": [0.0, 0.08]
+    }
+  ]
+}

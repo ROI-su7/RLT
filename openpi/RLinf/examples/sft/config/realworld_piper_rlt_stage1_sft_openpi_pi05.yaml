@@ -1,0 +1,104 @@
+defaults:
+  - hybrid_engines/fsdp@actor.fsdp_config
+  - override hydra/job_logging: stdout
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor: 0-7
+
+runner:
+  task_type: sft
+  logger:
+    log_path: "../results"
+    project_name: rlinf-piper-rlt
+    experiment_name: "piper_wire_rlt_stage1_official_joint_8x3090"
+    logger_backends: ["tensorboard"]
+  max_epochs: -1
+  max_steps: 2000
+  val_check_interval: -1
+  save_interval: 250
+
+data:
+  # LeRobot root containing data/ and meta/. Use the same action convention as
+  # examples/piper_real: 14 absolute joint targets, three RGB cameras.
+  train_data_paths: ${oc.env:RLINF_PIPER_DATASET_DIR}
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  # Eight 24 GB RTX 3090 GPUs run the official joint Stage-1 objective with
+  # FSDP full sharding. Start conservatively at one sample per rank.
+  micro_batch_size: 1
+  global_batch_size: 64
+  seed: 42
+  model:
+    model_type: "openpi"
+    precision: null
+    # This checkpoint preserves the original JAX LoRA A/B branches.
+    is_lora: true
+    model_path: ${oc.env:RLINF_PI05_TORCH_DIR}
+    num_action_chunks: 5
+    num_steps: 10
+    openpi_data:
+      repo_id: "piper_four_wire_rlt_stage1"
+      image_key: "observation.images.cam_high"
+      left_wrist_image_key: "observation.images.cam_left_wrist"
+      right_wrist_image_key: "observation.images.cam_right_wrist"
+      state_key: "observation.state"
+      action_key: "action"
+      task_key: "task"
+      # Preserve the normalization used by the original OpenPI LoRA training.
+      norm_stats_path: ${oc.env:RLINF_PI05_NORM_STATS}
+    openpi:
+      config_name: "pi05_piper_joint"
+      num_images_in_input: 3
+      # Preserve the source pi05_wire model's trained action-token horizon.
+      action_horizon: 50
+      train_expert_only: false
+      native_jax_lora: true
+      # The task VLA was already adapted on 500 demonstrations. Stage 1 only
+      # learns the RL-token autoencoder from stop-gradient VLA embeddings.
+      freeze_vla_for_rlt: true
+      noise_method: "flow_noise"
+      noise_params: [0.16, 0.12, 200]
+      joint_logprob: true
+      use_rlt: true
+      rlt_alpha: 0.0
+      # Must match train_piper_rlt_token_native_jax.py, which is what actually
+      # trains the token encoder, and the assertion Stage 2 makes when it loads
+      # the checkpoint. 768 = 3 cameras x 256 patches, language tokens dropped.
+      rlt_prefix_seq_len: 768
+      rlt_image_only: true
+      rlt_use_mask: true
+  optim:
+    lr: 2.5e-5
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-8
+    weight_decay: 1.0e-10
+    clip_grad: 1.0
+    total_training_steps: ${runner.max_steps}
+    lr_warmup_steps: 500
+    lr_scheduler: "cosine"
+    num_cycles: 0.5
+    min_lr: 2.5e-6
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    # Required when frozen VLA and trainable RL-token parameters share an FSDP
+    # unit; FlatParameter cannot mix requires_grad values otherwise.
+    use_orig_params: true
+    gradient_checkpointing: false
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}

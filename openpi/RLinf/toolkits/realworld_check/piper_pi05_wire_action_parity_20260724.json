@@ -1,0 +1,47 @@
+{
+  "passed": false,
+  "inputs": {
+    "dataset_indices": [
+      0,
+      159424,
+      318848
+    ],
+    "episode_indices": [
+      0,
+      152,
+      322
+    ],
+    "frame_indices": [
+      0,
+      597,
+      819
+    ],
+    "noise_seed": 20260724,
+    "num_denoise_steps": 10,
+    "prompt": "insert the wire"
+  },
+  "metrics": {
+    "arm_delta_direction_agreement": 0.7152777777777778,
+    "arm_mae_rad": 0.018831906840205193,
+    "arm_max_abs_rad": 0.05807870626449585,
+    "compared_prefix_steps": 5,
+    "gripper_mae_m": 0.0011434672633185983,
+    "gripper_max_abs_m": 0.005900977179408073,
+    "samples": 3
+  },
+  "limits": {
+    "arm_delta_direction_agreement_min": 0.9,
+    "arm_mae_rad_max": 0.01,
+    "arm_max_abs_rad_max": 0.05,
+    "gripper_mae_m_max": 0.002,
+    "gripper_max_abs_m_max": 0.01
+  },
+  "diagnostic_one_denoise_step": {
+    "arm_delta_direction_agreement": 0.7708333333333334,
+    "arm_mae_rad": 0.011075219139456749,
+    "arm_max_abs_rad": 0.02713516354560852,
+    "gripper_mae_m": 0.0001653458020882681,
+    "gripper_max_abs_m": 0.0002895151264965534
+  },
+  "decision": "Do not submit the formal Stage-1 job from this converted checkpoint until JAX/PyTorch action parity is fixed."
+}

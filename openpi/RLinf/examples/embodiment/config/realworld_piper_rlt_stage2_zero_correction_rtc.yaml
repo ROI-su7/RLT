@@ -1,0 +1,23 @@
+# Diagnostic B: zero Actor correction on the JAX execution path.
+#
+# Same as realworld_piper_rlt_stage2_zero_correction, but Actor chunks keep the
+# JAX executor: RTC bridge (VLA suffix during inference, offset 15), boundary
+# blend, executor EMA and the 0.4 rad/s interpolation, instead of direct
+# execution (stop at chunk end, plan[0:10], Actor command profile). With the
+# correction clamped to zero the robot runs exactly what plain JAX runs.
+#   - inserts like plain JAX -> the stall comes from direct execution;
+#   - still stalls           -> compare with plain JAX (I without B).
+#
+# Launch: RLINF_STAGE2_CONFIG_NAME=realworld_piper_rlt_stage2_zero_correction_rtc \
+#         bash examples/embodiment/run_piper_rlt_stage2_single.sh
+defaults:
+  - realworld_piper_rlt_stage2_zero_correction
+  - _self_
+
+runner:
+  logger:
+    experiment_name: "piper_wire_rlt_stage2_zero_correction_rtc"
+
+algorithm:
+  rlt_schedule:
+    actor_direct_execution: false

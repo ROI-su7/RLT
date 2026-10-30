@@ -1,0 +1,103 @@
+defaults:
+  - model/recap_value_model@actor.model
+  - hybrid_engines/fsdp@actor.fsdp_config
+  - _self_
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:REPO_PATH}/examples/offline_rl/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor,env,rollout: all
+
+runner:
+  task_type: sft
+  logger:
+    log_path: ${oc.env:RECAP_RUN_DIR}
+    project_name: piper-recap
+    experiment_name: piper_recap_value
+    logger_backends: [tensorboard]
+  max_epochs: 2000
+  max_steps: 2000
+  val_check_interval: -1
+  save_interval: 100
+  resume_dir: null
+
+data:
+  tag: piper_recap_v1
+  train_data_paths:
+    - dataset_path: ${oc.env:RECAP_DATASET}
+      type: rollout
+      weight: 1.0
+      robot_type: piper
+      model_type: pi05
+  eval_data_paths: []
+  robot_type: piper
+  model_type: pi05
+  action_dim: 32
+  action_horizon: 10
+  train_num_workers: 0
+  eval_num_workers: 0
+  persistent_workers: false
+  do_augment: false
+  gamma: 1.0
+  normalize_to_minus_one_zero: true
+  include_state: true
+  include_next_obs: false
+  balance_weights: true
+  seed: 42
+  prefetch_factor: 2
+  pin_memory: false
+
+algorithm:
+  adv_type: gae
+
+actor:
+  group_name: ActorGroup
+  training_backend: fsdp
+  seed: 42
+  micro_batch_size: 1
+  global_batch_size: 8
+  model:
+    siglip_path: ${oc.env:RECAP_SIGLIP_DIR}
+    gemma3_path: ${oc.env:RECAP_GEMMA_DIR}
+    tokenizer_path: ${oc.env:RECAP_GEMMA_DIR}
+    critic_expert_variant: gemma_1m
+    # The image-to-Gemma projector is freshly initialized. Keep its gradient
+    # path through Gemma/KV active; freezing/detaching the whole VLM would
+    # leave that cross-modal bridge untrained.
+    freeze_vlm: false
+    freeze_vision_encoder: true
+    stop_gradient_to_vlm: false
+    action_dim: 32
+    action_horizon: 10
+  fsdp_config:
+    strategy: fsdp
+    sharding_strategy: no_shard
+    use_orig_params: true
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+  optim:
+    lr: 5.0e-5
+    value_lr: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-8
+    weight_decay: 1.0e-10
+    clip_grad: 1.0
+    lr_scheduler: constant
+    total_training_steps: 2000
+    lr_warmup_steps: 100
+
+reward:
+  use_reward_model: false
+critic:
+  use_critic_model: false

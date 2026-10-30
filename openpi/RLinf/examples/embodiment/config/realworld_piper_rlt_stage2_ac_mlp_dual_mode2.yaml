@@ -1,0 +1,41 @@
+defaults:
+  - realworld_piper_rlt_stage2_ac_mlp_dual
+  - _self_
+
+rollout:
+  rlt_feature_model:
+    require_compact_response: false
+
+# Explicit opt-in for the two-host mode-2 leader/follower deployment. The
+# existing dual config remains mode 1 and is byte-for-byte behavior compatible.
+env:
+  train:
+    override_cfg:
+      four_can_mux_enabled: false
+      left_command_topic: /master/joint_left
+      right_command_topic: /master/joint_right
+      rtc_enabled: true
+    piper_control_mode: 2
+    mode2_takeover:
+      alignment_rate_hz: 15.0
+      max_velocity_rad_s: 0.10
+      manual_approach: true
+      approach_tolerance_rad: 0.08
+      approach_stable_samples: 3
+      position_tolerance_rad: 0.02
+      stable_samples: 10
+      feedback_timeout_s: 0.10
+      alignment_timeout_s: 30.0
+      leader_left_topic: /rlinf/mode2/leader_left
+      leader_right_topic: /rlinf/mode2/leader_right
+      follower_left_topic: /puppet/joint_left
+      follower_right_topic: /puppet/joint_right
+      leader_target_left_topic: /rlinf/mode2/leader_target_left
+      leader_target_right_topic: /rlinf/mode2/leader_target_right
+      leader_drag_left_service: /rlinf/mode2/leader_drag_left
+      leader_drag_right_service: /rlinf/mode2/leader_drag_right
+      follower_teleop_service: /rlinf/mode2/follower_teleop
+      ready_timeout_s: 5.0
+  eval:
+    piper_control_mode: 2
+    mode2_takeover: ${env.train.mode2_takeover}
